@@ -4,7 +4,13 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Squarez</title>
-  <link rel="icon" href="data:,">
+  <meta name="theme-color" content="#071629">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <meta name="apple-mobile-web-app-title" content="Squarez">
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" type="image/png" href="assets/icons/icon-192.png">
+  <link rel="apple-touch-icon" href="assets/icons/apple-touch-icon.png">
   <style>
     html, body {
       margin: 0;
@@ -36,11 +42,21 @@
     .error {
       color: #f66;
     }
+    #offline-status {
+      position: fixed;
+      bottom: 0;
+      padding: 2px 6px;
+      background: #071629;
+      font-size: 12px;
+    }
+    #offline-status:empty { display: none; }
   </style>
 </head>
 <body>
   <canvas id="screen" width="480" height="272"></canvas>
   <div class="hint">Arrows/WASD move &middot; Shift/Z turbo &middot; X slow &middot; Space grenade/revive &middot; C rage &middot; Esc pause/back &middot; Enter select &middot; gamepads supported</div>
   <script type="module" src="src/main.js"></script>
+  <div id="offline-status" role="status" aria-live="polite"></div>
+  <script type="module" src="src/pwa.js"></script>
 </body>
 </html>

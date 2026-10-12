@@ -8,6 +8,51 @@ The sprites, backgrounds, sounds, music and custom game files in `assets/` come 
 
 Play online at https://itsamenathan.github.io/Squarez-PSP-port/.
 
+### Install and play offline
+
+Open the site online once and wait for "Ready to play offline". The service worker
+downloads the complete game, including sounds, music and custom games.
+
+- Android: use Chrome's **Install app** or **Add to Home screen** menu.
+- iPhone/iPad: open in Safari, tap **Share > Add to Home Screen**, then open the icon.
+
+The installed app needs a controller to play on mobile; there are no touch controls.
+Installation and offline caching require HTTPS, or localhost for development.
+An HTTP LAN address cannot install the service worker. Browser storage can be
+evicted or cleared, so reopen online if the offline copy disappears. Scores and
+controller mappings remain local to the browser; the app has no cloud backup.
+
+New game versions download online and activate after all old game windows close.
+This avoids mixing code and assets from different versions during a game.
+
+### Updating the offline cache
+
+After changing HTML, the manifest, any `src/` file or any `assets/` file, run:
+
+```sh
+node scripts/build-offline.mjs
+```
+
+Commit the generated `sw.js` with those changes. The script hashes the app contents
+and service worker template to create a fresh cache version. No build or Node.js
+is required to serve the app. For the offline browser test:
+
+```sh
+npm ci
+CHROMIUM_PATH=/path/to/chromium npm run test:pwa
+```
+
+The install icons use the original `ICON0.PNG` artwork from
+`SQUAREZ/SQUAREZ%/EBOOT.PBP`, credited to POCHI in the game's credits.
+`assets/icons/psp-icon.png` preserves the extracted image unchanged. Square icons
+pad the landscape artwork instead of cropping it; the maskable variant keeps
+the artwork inside the safe area. To regenerate them, with ffmpeg installed:
+
+```sh
+python3 scripts/extract-icons.py /path/to/SQUAREZ.zip
+node scripts/build-offline.mjs
+```
+
 To run it locally:
 
 ```sh
