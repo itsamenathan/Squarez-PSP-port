@@ -42,6 +42,17 @@ npm ci
 CHROMIUM_PATH=/path/to/chromium npm run test:pwa
 ```
 
+The install icons use the original `ICON0.PNG` artwork from
+`SQUAREZ/SQUAREZ%/EBOOT.PBP`, credited to POCHI in the game's credits.
+`assets/icons/psp-icon.png` preserves the extracted image unchanged. Square icons
+pad the landscape artwork instead of cropping it; the maskable variant keeps
+the artwork inside the safe area. To regenerate them, with ffmpeg installed:
+
+```sh
+python3 scripts/extract-icons.py /path/to/SQUAREZ.zip
+node scripts/build-offline.mjs
+```
+
 To run it locally:
 
 ```sh
