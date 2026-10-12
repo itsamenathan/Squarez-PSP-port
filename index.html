@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
   <title>Squarez</title>
   <meta name="theme-color" content="#071629">
   <meta name="apple-mobile-web-app-capable" content="yes">
@@ -50,6 +50,135 @@
       font-size: 12px;
     }
     #offline-status:empty { display: none; }
+
+    /* On-screen controls (src/touch.js). In landscape the game fills the height and the
+       controls float over it, PSP-style; in portrait the controls sit below the game. */
+    #touch { display: none; }
+    body.touch {
+      --side: clamp(110px, 16vw, 160px);
+      --b: 54px;
+      --d: 48px;
+      /* Keep the whole diamond and the stick on screen, however narrow the side is. */
+      --fx: calc(max(var(--side) / 2, var(--d) + var(--b) / 2 + 10px) + env(safe-area-inset-right));
+      --sx: calc(max(var(--side) / 2, 70px) + env(safe-area-inset-left));
+      --fy: 62dvh;
+      --bg: rgba(30, 45, 80, 0.22);
+      --line: rgba(170, 190, 240, 0.35);
+      touch-action: none;
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    body.touch .hint { display: none; }
+    body.touch #screen {
+      width: min(100vw, 100dvh * 480 / 272);
+      box-shadow: none;
+    }
+    body.touch #touch {
+      display: block;
+      position: fixed;
+      inset: 0;
+      pointer-events: none;
+      -webkit-touch-callout: none;
+    }
+    #touch > * {
+      position: absolute;
+      pointer-events: auto;
+      touch-action: none;
+    }
+    #touch .stick-zone {
+      left: 0;
+      top: 56px;
+      bottom: 0;
+      width: 45vw;
+    }
+    #touch .stick-base {
+      position: absolute;
+      left: var(--sx);
+      top: calc(var(--fy) - 56px);
+      width: 120px;
+      height: 120px;
+      margin: -60px 0 0 -60px;
+      border-radius: 50%;
+      border: 2px solid var(--line);
+      background: var(--bg);
+      opacity: 0.6;
+    }
+    #touch .stick-base.active { opacity: 1; }
+    #touch .stick-knob {
+      position: absolute;
+      left: 30px;
+      top: 30px;
+      width: 56px;
+      height: 56px;
+      border-radius: 50%;
+      background: rgba(140, 170, 255, 0.35);
+      border: 2px solid rgba(200, 215, 255, 0.45);
+    }
+    #touch .btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      box-sizing: border-box;
+      border: 2px solid var(--line);
+      background: var(--bg);
+      color: rgba(220, 230, 255, 0.75);
+      font: bold 18px sans-serif;
+    }
+    #touch .btn.pressed { background: rgba(120, 150, 255, 0.5); }
+    #touch .btn svg {
+      width: 26px;
+      height: 26px;
+      fill: none;
+      stroke: currentColor;
+      stroke-width: 2.4;
+      stroke-linejoin: round;
+      stroke-linecap: round;
+    }
+    #touch .face {
+      width: var(--b);
+      height: var(--b);
+      border-radius: 50%;
+      right: calc(var(--fx) - var(--b) / 2);
+      top: calc(var(--fy) - var(--b) / 2);
+    }
+    #touch .face.top { top: calc(var(--fy) - var(--d) - var(--b) / 2); color: rgba(110, 224, 180, 0.9); }
+    #touch .face.bottom { top: calc(var(--fy) + var(--d) - var(--b) / 2); color: rgba(143, 180, 255, 0.9); }
+    #touch .face.left { right: calc(var(--fx) + var(--d) - var(--b) / 2); color: rgba(245, 160, 216, 0.9); }
+    #touch .face.right { right: calc(var(--fx) - var(--d) - var(--b) / 2); color: rgba(255, 138, 138, 0.9); }
+    #touch .shoulder {
+      top: calc(6px + env(safe-area-inset-top));
+      width: 76px;
+      height: 34px;
+    }
+    #touch .shoulder.l { left: calc(6px + env(safe-area-inset-left)); border-radius: 6px 18px 6px 6px; }
+    #touch .shoulder.r { right: calc(6px + env(safe-area-inset-right)); border-radius: 18px 6px 6px 6px; }
+    #touch .start, #touch .fs {
+      bottom: calc(8px + env(safe-area-inset-bottom));
+      height: 28px;
+      border-radius: 14px;
+      font-size: 12px;
+    }
+    #touch .start { right: calc(var(--fx) - 34px); width: 68px; }
+    #touch .fs { left: calc(var(--sx) - 22px); width: 44px; }
+    #touch .fs svg { width: 18px; height: 18px; }
+    @media (orientation: portrait) {
+      body.touch {
+        --b: 64px;
+        --d: 58px;
+        --fx: 25vw;
+        --fy: 72dvh;
+        --bg: rgba(30, 45, 80, 0.45);
+        --line: rgba(160, 180, 230, 0.4);
+        justify-content: flex-start;
+        padding-top: env(safe-area-inset-top);
+      }
+      #touch .stick-zone { top: calc(100vw * 272 / 480 + 72px); width: 50vw; }
+      #touch .stick-base { left: 25vw; top: calc(var(--fy) - 100vw * 272 / 480 - 72px); }
+      #touch .shoulder { top: calc(100vw * 272 / 480 + 16px + env(safe-area-inset-top)); width: 84px; height: 40px; }
+      #touch .start, #touch .fs { bottom: calc(36px + env(safe-area-inset-bottom)); }
+      #touch .start { right: calc(50vw - 34px); }
+      #touch .fs { left: 16px; }
+    }
   </style>
 </head>
 <body>

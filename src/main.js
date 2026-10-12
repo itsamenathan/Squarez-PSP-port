@@ -2,8 +2,9 @@ import {
   SCREEN_W, SCREEN_H, SPRITES, SPR, SOUNDS, SONGS, COLORS, MODES, CUSTOM_FILES, TIMED_OPTIONS,
   INSTRUCTIONS, TIPS, OBJECTS, CREDITS, parseGameFile,
 } from './data.js';
-import { Game } from './game.js';
+import { Game, DEADZONE_LO, DEADZONE_HI } from './game.js';
 import { FONT_8X8, FONT_5X10, BUTTONS } from './font.js';
+import { TouchControls } from './touch.js';
 
 const FRAME_MS = 1000 / 60;
 
@@ -142,9 +143,12 @@ const PAD_LABELS = {
   accept: '✕', back: '○', turbo: '✕', slow: '○', grenade: '□', rage: '△',
   start: 'START', pageLeft: 'L1', pageRight: 'R1', dpad: 'D-Pad',
 };
+// The on-screen controls use the same glyphs as a pad.
+const TOUCH_LABELS = { ...PAD_LABELS, pageLeft: 'L', pageRight: 'R', dpad: 'Stick' };
 
 const STICK_NAV = 0.5;
 const STICK_DEAD = 0.15;
+const TOUCH_DEAD = 0.1;
 
 // Controller layouts. Values are button indices; dpad entries are bindings, or null to
 // auto-detect (standard D-pad buttons, a hat-switch axis or axes 6/7).
@@ -202,7 +206,16 @@ class Input {
       if (actions) for (const a of actions) this.keys.delete(a);
     });
     window.addEventListener('blur', () => this.keys.clear());
-    window.addEventListener('pointerdown', () => this.app.userGesture());
+    // Touch only counts as a user activation (needed for audio) when the finger lifts.
+    window.addEventListener('pointerdown', e => {
+      if (e.pointerType === 'touch' && !this.touch.visible) this.touch.setVisible(true);
+      this.app.userGesture();
+    });
+    window.addEventListener('pointerup', () => this.app.userGesture());
+    this.touch = new TouchControls(() => {
+      if (this.app.options.vibration && navigator.vibrate) navigator.vibrate(8);
+    });
+    if (this.touch.visible) this.device = 'touch';
     window.addEventListener('gamepadconnected', e => {
       const p = e.gamepad;
       this.app.toast(`Controller connected: ${shortPadName(p.id)}`);
@@ -274,6 +287,22 @@ class Input {
     const now = new Set([...this.keys, ...this.tapped]);
     this.tapped.clear();
     let ax = null, ay = null;
+    const t = this.touch;
+    if (t.active() || t.tapped.size) {
+      for (const a of t.held) now.add(a);
+      for (const a of t.tapped) now.add(a);
+      t.tapped.clear();
+      const { x, y } = t.stick;
+      if (x || y) {
+        ax = this.touchAxis(x);
+        ay = this.touchAxis(y);
+      }
+      if (x < -STICK_NAV) now.add('navLeft');
+      if (x > STICK_NAV) now.add('navRight');
+      if (y < -STICK_NAV) now.add('navUp');
+      if (y > STICK_NAV) now.add('navDown');
+      this.device = 'touch';
+    }
     if (this.capture) this.updateCapture();
     for (const p of this.pads()) {
       if (this.capture && !this.capture.done) break;
@@ -303,6 +332,7 @@ class Input {
       if (y > STICK_NAV) now.add('navDown');
       if (now.size > before || moving) {
         if (this.device !== 'gamepad' || this.padIndex !== p.index) this.app.userGesture();
+        if (this.touch.visible) this.touch.setVisible(false);
         this.device = 'gamepad';
         this.padIndex = p.index;
       }
@@ -311,6 +341,23 @@ class Input {
     // PSP analog values: 0..255 with 0x82 at rest. The D-pad maps to the extremes (FUN_0890a20c).
     this.axisX = now.has('left') ? 0 : now.has('right') ? 0xff : ax ?? 0x82;
     this.axisY = now.has('up') ? 0 : now.has('down') ? 0xff : ay ?? 0x82;
+  }
+
+  // The game ignores the inner ~20% of the stick and then rounds speed down to whole pixels,
+  // so a linear mapping left a wide dead spot. Past a small dead zone the touch stick starts
+  // at the slowest speed for the current sensitivity and reaches full speed at the rim.
+  touchAxis(v) {
+    const m = Math.abs(v);
+    if (m < TOUCH_DEAD) return 0x82;
+    const g = this.app.game;
+    const sens = (g && g.turbo) || this.app.options.sensitivity;
+    const t = Math.min(1, (m - TOUCH_DEAD) / (0.95 - TOUCH_DEAD));
+    if (v > 0) {
+      const lo = Math.min(0xff, DEADZONE_HI + sens);
+      return Math.ceil(lo + t * (0xff - lo));
+    }
+    const hi = Math.max(0, DEADZONE_LO - sens);
+    return Math.floor(hi - t * hi);
   }
 
   // --- controller setup: record one binding per step ---
@@ -393,7 +440,8 @@ class Input {
   }
 
   label(action) {
-    return (this.device === 'gamepad' ? PAD_LABELS : KEY_LABELS)[action] || action;
+    const labels = { gamepad: PAD_LABELS, touch: TOUCH_LABELS }[this.device] || KEY_LABELS;
+    return labels[action] || action;
   }
 }
 
@@ -705,7 +753,9 @@ class App {
   }
 
   rumble(strength, ms) {
-    if (!this.options.vibration || this.input.device !== 'gamepad') return;
+    if (!this.options.vibration) return;
+    if (this.input.device === 'touch' && navigator.vibrate) navigator.vibrate(Math.round(ms * strength));
+    if (this.input.device !== 'gamepad') return;
     const pad = this.input.pad();
     const act = pad && pad.vibrationActuator;
     if (!act || !act.playEffect) return;
@@ -1144,9 +1194,10 @@ class App {
     } else if (this.page === 1) {
       TIPS.forEach((l, i) => r.small(l.replace(/\{(\w+)\}/g, (_, a) => this.glyph(a)), 6, 0x14 + i * 12, i === 0 ? COLORS.warning : COLORS.text));
       r.text('CONTROL LAYOUT', 6, 0x86, COLORS.warning);
-      const pad = this.input.device === 'gamepad';
+      const pad = this.input.device !== 'keyboard';
+      const touch = this.input.device === 'touch';
       const rows = [
-        ['Move Player', pad ? 'Analog stick or D-Pad' : 'Arrow keys or WASD'],
+        ['Move Player', touch ? 'Drag on the left side' : pad ? 'Analog stick or D-Pad' : 'Arrow keys or WASD'],
         ['Turbo (hold)', pad ? '✕' : 'Shift or Z'],
         ['Slow (hold)', pad ? '○' : 'X'],
         ['Drop Grenade / Revive', pad ? '□' : 'Space'],
