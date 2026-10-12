@@ -10,8 +10,8 @@ const FIELD_RIGHT = 0x1de;
 const FIELD_BOTTOM = 0x10e;
 const PLAYER_SIZE = 0x13;
 const PLAYER_BIG = 0x1d;
-const DEADZONE_LO = 0x73;
-const DEADZONE_HI = 0x9b;
+export const DEADZONE_LO = 0x73;
+export const DEADZONE_HI = 0x9b;
 
 const MAX_ENEMIES = 399;
 const MAX_SHRAPNEL = 200;

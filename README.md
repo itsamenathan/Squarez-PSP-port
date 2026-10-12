@@ -16,7 +16,9 @@ downloads the complete game, including sounds, music and custom games.
 - Android: use Chrome's **Install app** or **Add to Home screen** menu.
 - iPhone/iPad: open in Safari, tap **Share > Add to Home Screen**, then open the icon.
 
-The installed app needs a controller to play on mobile; there are no touch controls.
+On phones and tablets, on-screen controls appear: drag anywhere on the left side
+for the analog stick, and use the PSP face buttons, L/R and START on the right.
+They hide when a controller is used and come back on the next touch.
 Installation and offline caching require HTTPS, or localhost for development.
 An HTTP LAN address cannot install the service worker. Browser storage can be
 evicted or cleared, so reopen online if the offline copy disappears. Scores and
