@@ -1,6 +1,8 @@
 import {
-  SCREEN_W, SCREEN_H, SPRITES, SPR, SOUNDS, SONGS, COLORS, MODES, CUSTOM_FILES, TIMED_OPTIONS,
-  INSTRUCTIONS, TIPS, OBJECTS, CREDITS, parseGameFile,
+  SCREEN_W, SCREEN_H, SPRITES, SPR, SND, SOUNDS, SONGS, COLORS, MODES, CUSTOM_FILES, TIMED_OPTIONS,
+  INSTRUCTIONS, TIPS, OBJECTS, CREDITS, parseGameFile, serializeGameFile, newCustomGame,
+  STATS, SETTING_KEYS, SETTING_LABELS, SETTING_FLAGS, ENEMY_NAMES, TEXT_CHARS, TEXT_MAX,
+  THEME_COLORS, DEFAULT_THEME, c5,
 } from './data.js';
 import { Game, DEADZONE_LO, DEADZONE_HI } from './game.js';
 import { FONT_8X8, FONT_5X10, BUTTONS } from './font.js';
@@ -127,7 +129,10 @@ const KEYMAP = {
   ShiftLeft: ['turbo'], ShiftRight: ['turbo'], KeyZ: ['turbo'],
   KeyX: ['slow'],
   Space: ['grenade', 'accept'],
-  KeyC: ['rage'], KeyR: ['rage'],
+  KeyC: ['rage', 'triangle'], KeyR: ['rage', 'triangle'],
+  // Space is both Square and Cross on the keyboard, so menus use F for Square.
+  KeyF: ['square'],
+  KeyI: ['import'],
   Enter: ['accept'],
   Escape: ['start', 'back'], KeyP: ['start'], Backspace: ['back'],
   PageUp: ['pageLeft'], KeyQ: ['pageLeft'], PageDown: ['pageRight'], KeyE: ['pageRight'],
@@ -137,11 +142,11 @@ const KEYMAP = {
 // with the standard mapping they sit in the same place (A = Cross, B = Circle, X = Square, Y = Triangle).
 const KEY_LABELS = {
   accept: 'Enter', back: 'Esc', turbo: 'Shift', slow: 'X', grenade: 'Space', rage: 'C', start: 'Esc',
-  pageLeft: 'Q', pageRight: 'E', dpad: 'Arrows',
+  pageLeft: 'Q', pageRight: 'E', dpad: 'Arrows', square: 'F', triangle: 'C',
 };
 const PAD_LABELS = {
   accept: '✕', back: '○', turbo: '✕', slow: '○', grenade: '□', rage: '△',
-  start: 'START', pageLeft: 'L1', pageRight: 'R1', dpad: 'D-Pad',
+  start: 'START', pageLeft: 'L1', pageRight: 'R1', dpad: 'D-Pad', square: '□', triangle: '△',
 };
 // The on-screen controls use the same glyphs as a pad.
 const TOUCH_LABELS = { ...PAD_LABELS, pageLeft: 'L', pageRight: 'R', dpad: 'Stick' };
@@ -193,6 +198,12 @@ class Input {
     this.capture = null;
     window.addEventListener('keydown', e => {
       if (e.ctrlKey || e.metaKey || e.altKey) return;
+      // An open text field takes every key so letters can be typed.
+      if (this.app.text && this.app.textKey(e)) {
+        e.preventDefault();
+        this.device = 'keyboard';
+        return;
+      }
       const actions = KEYMAP[e.code];
       if (actions) {
         for (const a of actions) { this.keys.add(a); this.tapped.add(a); }
@@ -312,8 +323,8 @@ class Input {
       for (const d of this.dpad(p, prof)) now.add(d);
       if (b(prof.cross)) { now.add('turbo'); now.add('accept'); }
       if (b(prof.circle)) { now.add('slow'); now.add('back'); }
-      if (b(prof.square)) now.add('grenade');
-      if (b(prof.triangle)) now.add('rage');
+      if (b(prof.square)) { now.add('grenade'); now.add('square'); }
+      if (b(prof.triangle)) { now.add('rage'); now.add('triangle'); }
       if (b(prof.l1)) now.add('pageLeft');
       if (b(prof.r1)) now.add('pageRight');
       if (b(prof.start)) now.add('start');
@@ -466,8 +477,9 @@ function shortPadName(id) {
 
 // --- rendering ---------------------------------------------------------------------------------
 
-const ALPHA_M = 160 / 255; // theme.txt TRANS_TEXTM: unselected menu entries
-const ALPHA_H = 128 / 255; // theme.txt TRANS_TEXTH
+// Themes change these (see App.applyTheme).
+let ALPHA_M = 160 / 255; // theme.txt TRANS_TEXTM: unselected menu entries
+let ALPHA_H = 128 / 255; // theme.txt TRANS_TEXTH
 
 class Renderer {
   constructor(canvas, sprites, backgrounds) {
@@ -480,6 +492,7 @@ class Renderer {
     this.ctx.imageSmoothingEnabled = false;
     this.alphaM = ALPHA_M;
     this.alphaH = ALPHA_H;
+    this.alphaLog = 200 / 255; // TRANS_TEXTLOGN
     this.glyphMask = this.buildGlyphMask();
     this.tinted = new Map();
   }
@@ -532,7 +545,7 @@ class Renderer {
 
   background(which = 'game') {
     if (which === 'game' && this.solidBackground) {
-      this.ctx.fillStyle = '#000';
+      this.ctx.fillStyle = COLORS.background;
       this.ctx.fillRect(0, 0, SCREEN_W, SCREEN_H);
       return;
     }
@@ -604,6 +617,16 @@ class Renderer {
     this.ctx.fillRect(x, y, w, h);
   }
 
+  rect(x, y, w, h, color) {
+    this.ctx.fillStyle = color;
+    this.ctx.fillRect(x, y, w, h);
+  }
+
+  // Small text ending at the right edge.
+  smallRight(str, y, color = COLORS.text, alpha = 1) {
+    this.small(str, SCREEN_W - 2 - this.smallWidth(str), y, color, alpha);
+  }
+
   cursor(x, y, alpha = 1) {
     this.text('>', x, y, COLORS.warning, alpha);
   }
@@ -629,12 +652,41 @@ function saveJSON(key, value) {
   try { localStorage.setItem(key, JSON.stringify(value)); } catch { /* storage unavailable */ }
 }
 
+function cloneTheme(t) {
+  return JSON.parse(JSON.stringify(t));
+}
+
+// Custom game files are plain names ending in .TXT, like the files in custom/.
+function cleanFilename(name) {
+  let f = name.replace(/^.*[\\/]/, '').replace(/[^\w .-]/g, '').trim().toUpperCase() || 'UNTITLED.TXT';
+  if (!f.endsWith('.TXT')) f = f.replace(/\.[^.]*$/, '') + '.TXT';
+  return f;
+}
+
+function download(name, text) {
+  const url = URL.createObjectURL(new Blob([text], { type: 'text/plain' }));
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = name;
+  a.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
+// "1 day 2h 3m 4s" as in the original's stats screen; zero shows as None.
+function formatTime(secs) {
+  if (!secs) return 'None';
+  const d = Math.floor(secs / 86400), h = Math.floor(secs / 3600) % 24, m = Math.floor(secs / 60) % 60, s = secs % 60;
+  const hms = `${h}h ${m}m ${s}s`;
+  return d ? `${d} day${d === 1 ? '' : 's'} ${hms}` : hms;
+}
+
 // --- application -------------------------------------------------------------------------------
 
 // Main menu, laid out like FUN_0891405c: entries at x=0xcd, y=0x41 + 12 * i.
 const MENU_ITEMS = [
   ...MODES.map(m => ({ kind: 'mode', mode: m, label: m.label })),
   { kind: 'screen', screen: 'options', label: 'Options' },
+  { kind: 'screen', screen: 'stats', label: 'Stats' },
   { kind: 'screen', screen: 'highscores', label: 'High Scores' },
   { kind: 'screen', screen: 'instructions', label: 'Instructions' },
   { kind: 'screen', screen: 'credits', label: 'Credits' },
@@ -652,8 +704,14 @@ const OPTION_ROWS = [
   { key: 'messages', label: 'Beginner Help System:', bool: true },
   { key: 'largeTimer', label: 'Large Timer:', bool: true },
   { key: 'vibration', label: 'Controller Vibration:', bool: true },
+  { key: 'themes', label: 'Themes', action: true },
   { key: 'padsetup', label: 'Controller Setup', action: true },
 ];
+
+const STATS_ROWS = 20;
+const EDITOR_ROWS = 17;
+const SCRIPT_ROWS = 18;
+const CUSTOM_ROWS = 8;
 
 const PAUSE_ITEMS = ['Resume Game', 'Background', 'Music', 'Restart Game', 'Exit Game'];
 
@@ -663,7 +721,23 @@ class App {
     this.options = { ...DEFAULT_OPTIONS, ...loadJSON('squarez.options', {}) };
     this.scores = loadJSON('squarez.scores', {});
     this.unlocks = loadJSON('squarez.unlocks', {});
-    this.cheats = { god: false, turbo: false };
+    this.stats = loadJSON('squarez.stats', {});
+    this.statsTop = 0;
+    this.runFrames = 0;
+    this.playFrames = 0;
+    this.themes = [DEFAULT_THEME, ...loadJSON('squarez.themes', [])];
+    this.themeIndex = Math.min(loadJSON('squarez.theme', 0), this.themes.length - 1);
+    this.theme = cloneTheme(this.themes[this.themeIndex]);
+    this.themeRow = 0;
+    this.themeChannel = 0;
+    this.edit = null;
+    this.scriptTop = 0;
+    this.customTop = 0;
+    this.text = null;
+    // Cheat mode, its in-game toggles and the bomb blocker menu easter egg. Not saved.
+    this.cheats = { on: false, god: false, turbo: false, bombers: false };
+    this.code = '';
+    this.bomberSpawnAt = -Infinity;
     this.screen = 'loading';
     this.menuIndex = 0;
     this.timedMenu = false;
@@ -691,7 +765,11 @@ class App {
     this.sprites = new Sprites(sheet);
     this.renderer = new Renderer(this.canvas, this.sprites, { game, menu });
     this.renderer.solidBackground = !this.options.background;
+    this.applyTheme();
     this.input = new Input(this);
+    const flush = () => { if (document.visibilityState === 'hidden') this.saveStats(); };
+    document.addEventListener('visibilitychange', flush);
+    window.addEventListener('pagehide', () => this.saveStats());
     this.audio = new Audio();
     this.audio.options = this.options;
     this.renderer.background('menu');
@@ -727,7 +805,19 @@ class App {
         return null;
       }
     }));
-    this.customGames = games.filter(Boolean);
+    // Saved games replace a bundled file of the same name, like files copied over USB did.
+    const list = games.filter(Boolean);
+    for (const [file, text] of Object.entries(loadJSON('squarez.custom', {}))) {
+      const g = parseGameFile(text);
+      g.file = file;
+      g.savedAs = file;
+      g.user = true;
+      const i = list.findIndex(b => b.file.toUpperCase() === file.toUpperCase());
+      if (i >= 0) list[i] = g;
+      else list.push(g);
+    }
+    this.customGames = list;
+    this.customIndex = Math.min(this.customIndex, Math.max(0, list.length - 1));
   }
 
   // Audio can only start after the first user interaction.
@@ -811,13 +901,15 @@ class App {
     const scoreKey = this.scoreKey(mode, game, timed);
     this.lastStart = { mode, game, timed };
     this.game = new Game(this, { mode, game, timed, scoreKey });
+    this.addStat(`games:${mode.id}:${timed}`);
     this.entry = null;
     this.pauseIndex = 0;
     this.screen = 'game';
   }
 
   gameEnded(game) {
-    if (this.qualifies(game.opts.scoreKey, game.score)) {
+    // Games played with cheats don't make the high score list (DAT_089a6bb8).
+    if (!game.cheated && this.qualifies(game.opts.scoreKey, game.score)) {
       this.entry = { letters: (this.lastInitials || [0, 0, 0]).slice(), pos: 0, done: false, rank: -1, cooldown: 45 };
     } else {
       this.entry = { done: true, rank: -1, cooldown: 45 };
@@ -839,14 +931,23 @@ class App {
     const input = this.input;
     for (const t of this.toasts) t.ttl--;
     this.toasts = this.toasts.filter(t => t.ttl > 0);
-    if (this.screen !== 'game' && this.demo) {
-      this.demo.frames++;
-      this.demo.updateEnemies();
-      this.demo.phase = (this.demo.phase + 1) & 3;
+    if (++this.runFrames >= 60) {
+      this.runFrames = 0;
+      this.addStat('running');
     }
+    if (this.statsDirty && this.runFrames === 0 && this.stats.running % 10 === 0) this.saveStats();
+    if (this.screen !== 'game' && this.demo) this.updateDemo();
+    if (this.text) { this.updateText(input); return; }
     switch (this.screen) {
       case 'menu': this.updateMenu(input); break;
       case 'custom': this.updateCustom(input); break;
+      case 'editor': this.updateEditor(input); break;
+      case 'script': this.updateScript(input); break;
+      case 'stats': this.updateStats(input); break;
+      case 'themes': this.updateThemes(input); break;
+      case 'sprites':
+        if (input.pressed('back') || input.pressed('accept')) this.screen = 'themes';
+        break;
       case 'game': this.updateGame(input); break;
       case 'highscores': this.updateHighscores(input); break;
       case 'instructions':
@@ -862,7 +963,56 @@ class App {
     }
   }
 
+  // Menu background. With the TTSST code on, a bomb blocker joins every 3 seconds until
+  // 4 are on screen, and their explosions play out (FUN_0891405c).
+  updateDemo() {
+    const d = this.demo;
+    d.frames++;
+    if (this.cheats.bombers && d.enemies.filter(e => e.type === 6).length < 4 && d.frames - this.bomberSpawnAt >= 180) {
+      this.bomberSpawnAt = d.frames;
+      d.addEnemy(6);
+    }
+    d.updateEnemies();
+    d.updateShrapnel();
+    d.updateParticles();
+    d.removeDead();
+    d.phase = (d.phase + 1) & 3;
+  }
+
+  // Main menu codes (FUN_0891a510): □ adds S and △ adds T, any other input clears the
+  // buffer, and the fifth press is checked against the three codes.
+  menuCode(input) {
+    if (input.pressed('square')) this.code += 'S';
+    else if (input.pressed('triangle')) this.code += 'T';
+    else {
+      const other = ['up', 'down', 'left', 'right', 'navUp', 'navDown', 'navLeft', 'navRight', 'accept', 'back', 'start', 'pageLeft', 'pageRight'];
+      if (other.some(a => input.pressed(a))) this.code = '';
+      return;
+    }
+    if (this.code.length !== 5) {
+      if (this.code.length > 10) this.code = '';
+      return;
+    }
+    const code = this.code;
+    if (code === 'SSSTT') {
+      const c = this.cheats;
+      c.on = !c.on;
+      if (!c.on) { c.god = false; c.turbo = false; }
+      this.audio.play(c.on ? SND.BONUSLIFE : SND.GENERATE);
+    } else if (code === 'STSST') {
+      // Same flag as scoring 150 in Arcade, so this can lock Bomber again too.
+      this.unlocks.bomber = !this.unlocks.bomber;
+      saveJSON('squarez.unlocks', this.unlocks);
+      this.audio.play(SND.CRASH);
+    } else if (code === 'TTSST') {
+      this.cheats.bombers = !this.cheats.bombers;
+      this.audio.play(SND.BONUSLIFE);
+    } else return;
+    this.code = '';
+  }
+
   updateMenu(input) {
+    if (!this.timedMenu) this.menuCode(input);
     if (this.timedMenu) {
       if (input.nav('up')) this.timedIndex = (this.timedIndex + TIMED_CHOICES.length - 1) % TIMED_CHOICES.length;
       if (input.nav('down')) this.timedIndex = (this.timedIndex + 1) % TIMED_CHOICES.length;
@@ -890,22 +1040,365 @@ class App {
       this.optionIndex = 0;
       this.scoreIndex = 0;
     } else if (item.mode.id === 'custom') {
-      if (this.customGames.length) this.screen = 'custom';
+      this.screen = 'custom';
     } else {
       this.startGame(item.mode, item.mode.game, 0);
     }
   }
 
+  // Custom game menu: ✕ Load Game, □ Game Settings, △ New Game (strings at 0x08980a0c).
   updateCustom(input) {
     const n = this.customGames.length;
-    if (input.nav('up')) this.customIndex = (this.customIndex + n - 1) % n;
-    if (input.nav('down')) this.customIndex = (this.customIndex + 1) % n;
+    if (n && input.nav('up')) this.customIndex = (this.customIndex + n - 1) % n;
+    if (n && input.nav('down')) this.customIndex = (this.customIndex + 1) % n;
     if (input.nav('left')) this.customTimed = (this.customTimed + TIMED_OPTIONS.length - 1) % TIMED_OPTIONS.length;
-    if (input.nav('right') || input.pressed('rage')) this.customTimed = (this.customTimed + 1) % TIMED_OPTIONS.length;
+    if (input.nav('right')) this.customTimed = (this.customTimed + 1) % TIMED_OPTIONS.length;
+    this.customTop = Math.max(Math.min(this.customTop, this.customIndex), this.customIndex - CUSTOM_ROWS + 1);
+    const g = this.customGames[this.customIndex];
     if (input.pressed('back')) this.screen = 'menu';
-    else if (input.pressed('accept')) {
+    else if (input.pressed('triangle')) this.newGame();
+    else if (input.pressed('import')) this.importCustom();
+    else if (g && input.pressed('square')) this.openEditor(g);
+    else if (g && input.pressed('accept')) {
       const mode = MODES.find(m => m.id === 'custom');
-      this.startGame(mode, this.customGames[this.customIndex], TIMED_OPTIONS[this.customTimed]);
+      this.startGame(mode, g, TIMED_OPTIONS[this.customTimed]);
+    }
+  }
+
+  newGame() {
+    const taken = new Set(this.customGames.map(g => g.file.toUpperCase()));
+    let file = 'UNTITLED.TXT';
+    for (let i = 2; taken.has(file); i++) file = `UNTITLED${i}.TXT`;
+    const g = newCustomGame(file);
+    g.dirty = true;
+    this.customGames.push(g);
+    this.customIndex = this.customGames.length - 1;
+    this.openEditor(g);
+  }
+
+  importCustom() {
+    const picker = document.createElement('input');
+    picker.type = 'file';
+    picker.accept = '.txt,.TXT,text/plain';
+    picker.addEventListener('change', async () => {
+      const f = picker.files[0];
+      if (!f) return;
+      const g = parseGameFile(await f.text());
+      g.file = cleanFilename(f.name);
+      this.saveCustom(g);
+      this.toast(`Imported ${g.file}`);
+    });
+    picker.click();
+  }
+
+  // --- custom game editor (pause menu page in the original: FUN_0891c23c / FUN_08923e78) ---
+
+  editorRows(g) {
+    const rows = [
+      { label: 'Name', text: 'NAME' },
+      { label: 'Author', text: 'AUTHOR' },
+      { label: 'Description', text: 'DESCRIPTION' },
+      { label: 'Filename', text: 'file' },
+      ...SETTING_KEYS.map((k, i) => ({ label: SETTING_LABELS[i], setting: k })),
+      { label: 'Save Custom File', action: 'save' },
+      { label: 'Export .TXT File', action: 'export' },
+    ];
+    if (g.user) rows.push({ label: 'Delete Custom File', action: 'delete' });
+    return rows;
+  }
+
+  openEditor(g) {
+    this.edit = { game: g, index: 0, top: 0, confirm: false };
+    this.screen = 'editor';
+  }
+
+  updateEditor(input) {
+    const e = this.edit;
+    const g = e.game;
+    const rows = this.editorRows(g);
+    const n = rows.length;
+    const before = e.index;
+    if (input.nav('up')) e.index = (e.index + n - 1) % n;
+    if (input.nav('down')) e.index = (e.index + 1) % n;
+    if (e.index !== before) e.confirm = false;
+    e.top = Math.max(Math.min(e.top, e.index), e.index - EDITOR_ROWS + 1);
+    const row = rows[e.index];
+    if (row.setting) {
+      const k = row.setting;
+      const max = SETTING_FLAGS.has(k) ? 1 : 999;
+      let v = g.settings[k];
+      if (input.nav('left')) v--;
+      if (input.nav('right')) v++;
+      if (input.pressed('pageLeft')) v -= 10;
+      if (input.pressed('pageRight')) v += 10;
+      v = Math.max(0, Math.min(max, v));
+      if (v !== g.settings[k]) { g.settings[k] = v; g.dirty = true; }
+    }
+    if (input.pressed('back')) { this.screen = 'custom'; return; }
+    if (input.pressed('square')) { this.scriptTop = 0; this.screen = 'script'; return; }
+    if (!input.pressed('accept')) return;
+    if (row.text) {
+      this.openText(row.label, g[row.text], v => {
+        const value = row.text === 'file' ? cleanFilename(v) : v;
+        if (value !== g[row.text]) { g[row.text] = value; g.dirty = true; }
+      });
+    } else if (row.action === 'save') {
+      this.saveCustom(g);
+    } else if (row.action === 'export') {
+      download(cleanFilename(g.file), serializeGameFile(g));
+    } else if (row.action === 'delete') {
+      if (!e.confirm) { e.confirm = true; return; }
+      const saved = loadJSON('squarez.custom', {});
+      delete saved[g.savedAs || g.file];
+      saveJSON('squarez.custom', saved);
+      this.toast(`Deleted ${g.savedAs || g.file}`);
+      this.edit = null;
+      this.screen = 'custom';
+      this.loadCustomGames();
+    }
+  }
+
+  // Saved games live in localStorage, keyed by filename.
+  saveCustom(g) {
+    g.file = cleanFilename(g.file);
+    const clash = this.customGames.find(o => o !== g && o.file.toUpperCase() === g.file.toUpperCase() && !o.user);
+    const saved = loadJSON('squarez.custom', {});
+    if (g.savedAs && g.savedAs !== g.file) delete saved[g.savedAs];
+    saved[g.file] = serializeGameFile(g);
+    saveJSON('squarez.custom', saved);
+    g.savedAs = g.file;
+    g.user = true;
+    g.dirty = false;
+    // Saving over another game's file replaces it, as on the PSP.
+    const other = this.customGames.findIndex(o => o !== g && o.file.toUpperCase() === g.file.toUpperCase());
+    if (other >= 0) this.customGames.splice(other, 1);
+    if (!this.customGames.includes(g)) this.customGames.push(g);
+    this.customIndex = this.customGames.indexOf(g);
+    this.toast(clash ? `Saved ${g.file} (replaces the bundled game)` : `Saved ${g.file}`);
+  }
+
+  updateScript(input) {
+    const max = Math.max(0, this.edit.game.script.length - SCRIPT_ROWS);
+    if (input.nav('up')) this.scriptTop = Math.max(0, this.scriptTop - 1);
+    if (input.nav('down')) this.scriptTop = Math.min(max, this.scriptTop + 1);
+    if (input.pressed('pageLeft')) this.scriptTop = Math.max(0, this.scriptTop - SCRIPT_ROWS);
+    if (input.pressed('pageRight')) this.scriptTop = Math.min(max, this.scriptTop + SCRIPT_ROWS);
+    if (input.pressed('back') || input.pressed('square')) this.screen = 'editor';
+  }
+
+  // --- text entry: D-Pad picks letters, as on the PSP (FUN_08906fe0); keyboards can type ---
+
+  openText(label, value, done) {
+    const chars = [...value].slice(0, TEXT_MAX);
+    this.text = { label, chars, pos: Math.min(chars.length, TEXT_MAX - 1), caps: true, done };
+  }
+
+  closeText(accept) {
+    const t = this.text;
+    this.text = null;
+    if (accept) t.done(t.chars.join('').trim());
+  }
+
+  updateText(input) {
+    const t = this.text;
+    const cycle = d => {
+      if (t.pos >= TEXT_MAX) return;
+      const cur = (t.chars[t.pos] || ' ').toUpperCase();
+      const i = Math.max(0, TEXT_CHARS.indexOf(cur));
+      const next = TEXT_CHARS[(i + d + TEXT_CHARS.length) % TEXT_CHARS.length];
+      t.chars[t.pos] = t.caps ? next : next.toLowerCase();
+    };
+    if (input.nav('up')) cycle(1);
+    if (input.nav('down')) cycle(-1);
+    if (input.nav('left')) t.pos = Math.max(0, t.pos - 1);
+    if (input.nav('right') || input.pressed('back')) t.pos = Math.min(t.chars.length, TEXT_MAX - 1, t.pos + 1);
+    if (input.pressed('square')) t.caps = !t.caps;
+    if (input.pressed('pageLeft') && t.pos > 0) t.chars.splice(--t.pos, 1);
+    if (input.pressed('accept') || input.pressed('pageRight')) this.closeText(true);
+  }
+
+  // Keyboard typing for an open text field. Returns true when the key was used.
+  textKey(e) {
+    const t = this.text;
+    if (e.key === 'Enter') this.closeText(true);
+    else if (e.key === 'Escape') this.closeText(false);
+    else if (e.key === 'Backspace') { if (t.pos > 0) t.chars.splice(--t.pos, 1); }
+    else if (e.key === 'Delete') t.chars.splice(t.pos, 1);
+    else if (e.key === 'ArrowLeft') t.pos = Math.max(0, t.pos - 1);
+    else if (e.key === 'ArrowRight') t.pos = Math.min(t.chars.length, t.pos + 1);
+    else if (e.key === 'Home') t.pos = 0;
+    else if (e.key === 'End') t.pos = t.chars.length;
+    else if (e.key.length === 1 && e.key >= ' ' && e.key <= '~') {
+      if (t.chars.length < TEXT_MAX) t.chars.splice(t.pos++, 0, e.key);
+    } else return false;
+    return true;
+  }
+
+  // --- stats (FUN_089023f0 draws, FUN_0891b100 handles input) ---
+
+  addStat(key, n = 1) {
+    this.stats[key] = (this.stats[key] || 0) + n;
+    this.statsDirty = true;
+  }
+
+  saveStats() {
+    if (!this.statsDirty) return;
+    this.statsDirty = false;
+    saveJSON('squarez.stats', this.stats);
+  }
+
+  statValue(row) {
+    if (!row.sum) return this.stats[row.key] || 0;
+    let total = 0;
+    for (const [k, v] of Object.entries(this.stats)) if (k.startsWith(row.key + ':')) total += v;
+    return total;
+  }
+
+  updateStats(input) {
+    const max = STATS.length - STATS_ROWS;
+    const fast = input.held('pageRight');
+    if (input.held('pageLeft') && fast && (input.pressed('pageLeft') || input.pressed('pageRight'))) {
+      // Asks once before wiping everything; the original reset straight away.
+      if (!this.statsConfirm) {
+        this.statsConfirm = 240;
+        this.toast(`Press ${this.glyph('pageLeft')}+${this.glyph('pageRight')} again to reset all stats`);
+      } else {
+        this.statsConfirm = 0;
+        this.stats = {};
+        this.statsDirty = true;
+        // FUN_0891b100 also clears the Bomber unlock (DAT_089a6ba4) here.
+        this.unlocks.bomber = false;
+        saveJSON('squarez.unlocks', this.unlocks);
+        this.saveStats();
+        this.toast('Stats reset');
+      }
+      return;
+    }
+    if (this.statsConfirm) this.statsConfirm--;
+    // Holding R1 scrolls every frame (QuickScroll).
+    const step = dir => (fast ? input.held(dir) || input.held('nav' + dir[0].toUpperCase() + dir.slice(1)) : input.nav(dir));
+    if (step('up')) this.statsTop = Math.max(0, this.statsTop - 1);
+    if (step('down')) this.statsTop = Math.min(max, this.statsTop + 1);
+    if (input.pressed('back')) this.screen = 'menu';
+  }
+
+  // --- themes (Options > Themes, FUN_0890389c) ---
+
+  applyTheme() {
+    const th = this.theme;
+    for (const row of THEME_COLORS) {
+      const [r, g, b] = th.colors[row.key];
+      const n = th.trans[row.key] ? th.trans[row.key][0] : 255;
+      // Log text fades as a whole (Renderer.alphaLog); other kinds bake TRANS_*N into the colour.
+      COLORS[row.key] = row.key === 'log' || row.key === 'background' || n >= 255 ? c5(r, g, b)
+        : c5(r, g, b).replace('rgb(', 'rgba(').replace(')', `,${(n / 255).toFixed(3)})`);
+    }
+    ALPHA_M = th.trans.text[1] / 255;
+    ALPHA_H = th.trans.text[2] / 255;
+    const rend = this.renderer;
+    rend.alphaM = ALPHA_M;
+    rend.alphaH = ALPHA_H;
+    rend.alphaLog = th.trans.log[0] / 255;
+    rend.tinted.clear();
+  }
+
+  themeRows() {
+    const rows = [
+      { label: 'Theme Name', text: 'NAME' },
+      { label: 'Author', text: 'AUTHOR' },
+      { label: 'Description', text: 'DESCRIPTION' },
+      ...THEME_COLORS.map(c => ({ label: c.label, color: c })),
+      { label: 'Save Theme', action: 'save' },
+      { label: 'View Sprites', action: 'sprites' },
+      { label: 'Restore Defaults', action: 'defaults' },
+    ];
+    if (this.themeIndex > 0) rows.push({ label: 'Delete Theme', action: 'delete' });
+    return rows;
+  }
+
+  selectTheme(i) {
+    this.themeIndex = i;
+    this.theme = cloneTheme(this.themes[i]);
+    this.themeDirty = false;
+    saveJSON('squarez.theme', i);
+    this.applyTheme();
+  }
+
+  saveThemes() {
+    saveJSON('squarez.themes', this.themes.slice(1));
+    saveJSON('squarez.theme', this.themeIndex);
+  }
+
+  updateThemes(input) {
+    const rows = this.themeRows();
+    const n = rows.length;
+    const before = this.themeRow;
+    if (input.nav('up')) this.themeRow = (this.themeRow + n - 1) % n;
+    if (input.nav('down')) this.themeRow = (this.themeRow + 1) % n;
+    if (this.themeRow !== before) this.themeConfirm = false;
+    const row = rows[this.themeRow];
+    const th = this.theme;
+    if (input.pressed('back')) {
+      if (this.themeDirty) this.toast('Theme changes are not saved until you Save Theme');
+      this.screen = 'options';
+      return;
+    }
+    if (this.themeRow === 0) {
+      // Left/Right on the name switches between saved themes (Change Theme).
+      const count = this.themes.length;
+      if (input.nav('left')) this.selectTheme((this.themeIndex + count - 1) % count);
+      if (input.nav('right')) this.selectTheme((this.themeIndex + 1) % count);
+    }
+    if (row.color) {
+      const channels = 3 + row.color.trans;
+      this.themeChannel = Math.min(this.themeChannel, channels - 1);
+      if (input.pressed('accept') || input.pressed('pageRight')) this.themeChannel = (this.themeChannel + 1) % channels;
+      if (input.pressed('pageLeft')) this.themeChannel = (this.themeChannel + channels - 1) % channels;
+      const d = (input.nav('right') ? 1 : 0) - (input.nav('left') ? 1 : 0);
+      if (d) {
+        const key = row.color.key;
+        const c = this.themeChannel;
+        if (c < 3) th.colors[key][c] = Math.max(0, Math.min(31, th.colors[key][c] + d));
+        else th.trans[key][c - 3] = Math.max(0, Math.min(255, th.trans[key][c - 3] + d * 5));
+        this.themeDirty = true;
+        this.applyTheme();
+      }
+      return;
+    }
+    if (!input.pressed('accept')) return;
+    if (row.text) {
+      this.openText(row.label, th[row.text], v => {
+        if (v !== th[row.text]) { th[row.text] = v; this.themeDirty = true; }
+      });
+    } else if (row.action === 'save') {
+      if (this.themeIndex === 0) {
+        // The default theme stays as shipped; saving it makes a new theme.
+        if (th.NAME === DEFAULT_THEME.NAME) th.NAME = `THEME ${this.themes.length}`;
+        this.themes.push(cloneTheme(th));
+        this.themeIndex = this.themes.length - 1;
+      } else {
+        this.themes[this.themeIndex] = cloneTheme(th);
+      }
+      this.saveThemes();
+      this.themeDirty = false;
+      this.toast(`Saved theme ${th.NAME}`);
+    } else if (row.action === 'sprites') {
+      this.screen = 'sprites';
+    } else if (row.action === 'defaults') {
+      const d = cloneTheme(DEFAULT_THEME);
+      th.colors = d.colors;
+      th.trans = d.trans;
+      this.themeDirty = true;
+      this.applyTheme();
+      this.toast('Theme colors restored to defaults');
+    } else if (row.action === 'delete') {
+      if (!this.themeConfirm) { this.themeConfirm = true; return; }
+      this.themeConfirm = false;
+      this.themes.splice(this.themeIndex, 1);
+      this.selectTheme(0);
+      this.saveThemes();
+      this.themeRow = 0;
+      this.toast('Theme deleted');
     }
   }
 
@@ -968,6 +1461,10 @@ class App {
       return;
     }
     g.update(input);
+    if (!g.paused && ++this.playFrames >= 60) {
+      this.playFrames = 0;
+      this.addStat(`time:${g.mode.id}:${g.opts.timed}`);
+    }
   }
 
   // Controller setup works with the keyboard while mapping, because the pad's buttons may be wrong.
@@ -996,6 +1493,20 @@ class App {
 
   updateHighscores(input) {
     const keys = this.scoreKeys();
+    // The original resets with L1+R1, but here L1/R1 also turn pages, so △ (pressed twice) resets.
+    if (input.pressed('triangle')) {
+      const k = keys[this.scoreIndex];
+      if (this.scoreConfirm !== k.key) {
+        this.scoreConfirm = k.key;
+        this.toast(`Press ${this.glyph('triangle')} again to reset ${k.label}`);
+      } else {
+        this.scoreConfirm = null;
+        delete this.scores[k.key];
+        saveJSON('squarez.scores', this.scores);
+        this.toast(`${k.label} high scores reset`);
+      }
+      return;
+    }
     if (input.nav('right') || input.nav('down') || input.pressed('pageRight') || input.pressed('accept')) this.scoreIndex = (this.scoreIndex + 1) % keys.length;
     if (input.nav('left') || input.nav('up') || input.pressed('pageLeft')) this.scoreIndex = (this.scoreIndex + keys.length - 1) % keys.length;
     if (input.pressed('back')) this.screen = 'menu';
@@ -1018,7 +1529,11 @@ class App {
     const row = OPTION_ROWS[this.optionIndex];
     let changed = false;
     if (row && row.action) {
-      if (input.pressed('accept')) { this.screen = 'padsetup'; this.setupStarted = false; }
+      if (input.pressed('accept')) {
+        this.screen = row.key;
+        this.setupStarted = false;
+        this.themeRow = 0;
+      }
     } else if (row) {
       const o = this.options;
       if (row.bool) {
@@ -1054,7 +1569,13 @@ class App {
       case 'options': this.drawOptions(r); break;
       case 'padsetup': this.drawPadSetup(r); break;
       case 'credits': this.drawCredits(r); break;
+      case 'stats': this.drawStats(r); break;
+      case 'editor': this.drawEditor(r); break;
+      case 'script': this.drawScript(r); break;
+      case 'themes': this.drawThemes(r); break;
+      case 'sprites': this.drawSprites(r); break;
     }
+    if (this.text) this.drawText(r);
     this.toasts.forEach((t, i) => {
       const y = 0xd8 - (this.toasts.length - 1 - i) * 11;
       const w = r.smallWidth(t.text) + 8;
@@ -1066,6 +1587,7 @@ class App {
   drawDemo(r) {
     r.background('menu');
     for (const e of this.demo.enemies) r.sprite(this.demo.enemySprite(e), e.x, e.y);
+    this.demo.drawEffects(r);
   }
 
   drawHeader(r, title) {
@@ -1102,6 +1624,7 @@ class App {
     }
     r.smallCenter(help, 0xf0, locked ? COLORS.important : COLORS.text);
     r.center('Copyright 2005 GlobWare.com', 0x100, COLORS.text);
+    if (this.cheats.on) r.text('CHEAT ON', 0x19e, 0x100, COLORS.important);
   }
 
   drawCustom(r) {
@@ -1109,21 +1632,184 @@ class App {
     r.dim(0.5);
     this.drawHeader(r, 'CUSTOM GAMES');
     r.text(`Custom Games: ${this.customGames.length}`, 2, 0x14, COLORS.text, ALPHA_M);
-    this.customGames.forEach((g, i) => {
+    const shown = this.customGames.slice(this.customTop, this.customTop + CUSTOM_ROWS);
+    shown.forEach((g, k) => {
+      const i = this.customTop + k;
       const sel = i === this.customIndex;
-      const y = 0x2c + i * 12;
-      r.text(g.NAME, 0x14, y, COLORS.text, sel ? 1 : ALPHA_M);
-      r.small(g.file, 0x118, y - 1, COLORS.alt, sel ? 1 : ALPHA_M);
+      const y = 0x2c + k * 12;
+      r.text(g.NAME + (g.dirty ? '*' : ''), 0x14, y, COLORS.text, sel ? 1 : ALPHA_M);
+      r.small(g.file, 0x118, y - 1, g.user ? COLORS.warning : COLORS.alt, sel ? 1 : ALPHA_M);
     });
-    const g = this.customGames[this.customIndex];
-    const y = 0x34 + this.customGames.length * 12;
-    r.text(`AUTHOR: ${g.AUTHOR}`, 0x14, y, COLORS.alt);
-    r.text(g.DESCRIPTION, 0x14, y + 12, COLORS.text);
-    r.text(g.script.length ? `SCRIPTED: YES (${g.script.length} LINES)` : 'SCRIPTED: NO', 0x14, y + 24, COLORS.alt);
-    const t = TIMED_OPTIONS[this.customTimed];
-    r.text(t ? `< TIMED ${t / 60}:00 >` : '< UNTIMED >', 0x14, y + 42, COLORS.warning);
+    if (this.customTop > 0) r.text('^', 6, 0x2c, COLORS.warning);
+    if (this.customTop + CUSTOM_ROWS < this.customGames.length) r.text('v', 6, 0x2c + (CUSTOM_ROWS - 1) * 12, COLORS.warning);
     const b = a => this.glyph(a);
-    r.smallCenter(`${b('dpad')} Up/Dn:Select Game  ${b('dpad')} Left/Right:Timed  ${b('accept')}:Play Game  ${b('back')}:Back`, 0xf6, COLORS.text);
+    const g = this.customGames[this.customIndex];
+    const y = 0x34 + Math.min(CUSTOM_ROWS, Math.max(1, this.customGames.length)) * 12;
+    if (g) {
+      r.text(`AUTHOR: ${g.AUTHOR}`, 0x14, y, COLORS.alt);
+      r.text(g.DESCRIPTION, 0x14, y + 12, COLORS.text);
+      r.text(g.script.length ? `SCRIPTED: YES (${g.script.length} LINES)` : 'SCRIPTED: NO', 0x14, y + 24, COLORS.alt);
+      const t = TIMED_OPTIONS[this.customTimed];
+      r.text(t ? `< TIMED ${t / 60}:00 >` : '< UNTIMED >', 0x14, y + 38, COLORS.warning);
+    } else {
+      r.text(`No custom games. Press ${b('triangle')} to make one.`, 0x14, 0x2c, COLORS.warning);
+    }
+    r.smallCenter(`${b('dpad')} Up/Dn:Select Game  ${b('dpad')} Left/Right:Timed${this.input.device === 'keyboard' ? '  I:Import .TXT' : ''}`, 0xf6, COLORS.text);
+    r.smallCenter(`${b('accept')}:Load Game  ${b('square')}:Game Settings  ${b('triangle')}:New Game  ${b('back')}:Back`, 0x100, COLORS.text);
+  }
+
+  // Custom game editor: labels at x=2, values at x=0xf2, 17 rows from y=0x1e (FUN_0891c23c).
+  drawEditor(r) {
+    this.drawDemo(r);
+    r.dim(0.6);
+    const e = this.edit;
+    const g = e.game;
+    this.drawHeader(r, 'CUSTOM GAME EDITOR');
+    r.small(`Current Game File: ${g.savedAs || g.file}${g.dirty ? '  (UNSAVED CHANGES)' : ''}`, 2, 0x10, COLORS.alt);
+    const rows = this.editorRows(g);
+    rows.slice(e.top, e.top + EDITOR_ROWS).forEach((row, k) => {
+      const i = e.top + k;
+      const y = 0x1e + k * 12;
+      const sel = i === e.index;
+      const a = sel ? 1 : ALPHA_M;
+      let label = row.label;
+      if (row.action === 'delete' && sel && e.confirm) label = `Delete Custom File - press ${this.glyph('accept')} again`;
+      r.text(label, 2, y, row.action ? COLORS.warning : COLORS.text, a);
+      const v = row.text ? g[row.text] : row.setting ? String(g.settings[row.setting]) : '';
+      if (row.text && v.length * 8 > SCREEN_W - 0xf2) r.small(v, 0xf2, y - 1, sel ? COLORS.warning : COLORS.text, a);
+      else r.text(v, 0xf2, y, sel ? COLORS.warning : COLORS.text, a);
+    });
+    const b = a => this.glyph(a);
+    const row = rows[e.index];
+    const adjust = row.setting ? `  ${b('dpad')} Left/Right:-/+ Adjust Setting  ${b('pageLeft')}/${b('pageRight')}:-/+10` : '';
+    r.smallCenter(`${b('dpad')} Up/Dn:Select Setting${adjust}`, 0xf6, COLORS.text);
+    r.smallCenter(`${b('accept')}:Select  ${b('square')}:Compiled Script  ${b('back')}:Back`, 0x100, COLORS.text);
+  }
+
+  drawScript(r) {
+    this.drawDemo(r);
+    r.dim(0.6);
+    const g = this.edit.game;
+    this.drawHeader(r, 'CUSTOM GAME EDITOR');
+    r.text(`Compiled Script (${g.script.length} LINES)`, 2, 0x14, COLORS.text);
+    r.text('LINE  SPAWN  ACTION', 2, 0x24, COLORS.warning);
+    const pad = (n, w) => String(n).padStart(w, '0');
+    g.script.slice(this.scriptTop, this.scriptTop + SCRIPT_ROWS).forEach((s, k) => {
+      const head = `${pad(this.scriptTop + k + 1, 4)}   ${pad(s.score, 3)}   `;
+      const action = s.kind === 'ADDENEMY' ? `ADDENEMY(${ENEMY_NAMES[s.type]})`
+        : s.kind === 'MODSETTING' ? `MODSETTING(${s.key})(${s.value})`
+        : s.kind === 'GAMETIMER' ? `GAMETIMER ${s.seconds} SECS` : 'WINGAME';
+      r.text(head + action, 2, 0x30 + k * 10, COLORS.text);
+    });
+    if (!g.script.length) r.text('SCRIPTED: NO', 2, 0x30, COLORS.alt);
+    const b = a => this.glyph(a);
+    r.smallCenter(`${b('dpad')} Up/Dn:Scroll  ${b('pageLeft')}/${b('pageRight')}:Page  ${b('back')}:Back`, 0x100, COLORS.text);
+  }
+
+  drawText(r) {
+    const t = this.text;
+    r.dim(0.6);
+    r.rect(0x10, 0x48, SCREEN_W - 0x20, 0x5c, COLORS.alt);
+    r.rect(0x11, 0x49, SCREEN_W - 0x22, 0x5a, '#000');
+    r.center(t.label, 0x50, COLORS.warning);
+    const x = SCREEN_W / 2 - TEXT_MAX * 4;
+    r.rect(x - 2, 0x64, TEXT_MAX * 8 + 4, 12, 'rgba(255,255,255,0.08)');
+    r.text(t.chars.join(''), x, 0x66, COLORS.text);
+    if ((this.demo.frames >> 4) & 1) r.rect(x + t.pos * 8, 0x6f, 8, 1, COLORS.warning);
+    r.small(`${t.chars.length}/${TEXT_MAX}`, x + TEXT_MAX * 8 - 30, 0x74, COLORS.alt);
+    const b = a => this.glyph(a);
+    if (this.input.device === 'keyboard') {
+      r.smallCenter('Type to edit   Arrows:Move   Backspace:Delete', 0x86, COLORS.text);
+      r.smallCenter('Enter:Done   Esc:Cancel', 0x92, COLORS.text);
+    } else {
+      r.smallCenter(`${b('dpad')} Up/Dn:Change Letter  ${b('dpad')} Left/Right:Move`, 0x86, COLORS.text);
+      r.smallCenter(`${b('accept')}:Select  ${b('square')}:Caps ${t.caps ? 'Off' : 'On'}  ${b('back')}:Advance  L1:Backspace  R1:Done`, 0x92, COLORS.text);
+    }
+  }
+
+  // 20 rows from y=0x19, 11 pixels apart: "label: " in the alt colour, then the value.
+  drawStats(r) {
+    this.drawDemo(r);
+    r.dim(0.6);
+    this.drawHeader(r, 'STATS');
+    STATS.slice(this.statsTop, this.statsTop + STATS_ROWS).forEach((row, i) => {
+      const y = 0x19 + i * 11;
+      const label = `${row.label}: `;
+      const v = this.statValue(row);
+      r.small(label, 2, y, COLORS.alt);
+      r.small(row.time ? formatTime(v) : v.toLocaleString('en-US'), 2 + r.smallWidth(label), y, COLORS.text);
+    });
+    const b = a => this.glyph(a);
+    r.small(`(${STATS.length} stats)`, 2, 0x100, COLORS.text);
+    r.smallCenter(`${b('pageLeft')}+${b('pageRight')}:Reset Stats  ${b('pageRight')}:QuickScroll  ${b('back')}:Back`, 0x100, COLORS.text);
+  }
+
+  // Theme editor, laid out like FUN_0890389c: values from x=0x96, R/G/B then a swatch,
+  // then the N/M/H transparencies and a sample letter.
+  drawThemes(r) {
+    this.drawDemo(r);
+    r.dim(0.6);
+    const th = this.theme;
+    this.drawHeader(r, `OPTIONS - THEMES (${this.themeIndex + 1} of ${this.themes.length})`);
+    r.small(this.themeIndex ? `Saved theme${this.themeDirty ? ' (UNSAVED CHANGES)' : ''}` : `Built-in theme${this.themeDirty ? ' (UNSAVED CHANGES)' : ''}`, 2, 0x10, COLORS.alt);
+    const rows = this.themeRows();
+    const ys = [];
+    let y = 0x20;
+    rows.forEach((row, i) => {
+      if (i === 3) {
+        r.text('COLOR SETTINGS', 0x96, 0x53, COLORS.text);
+        r.text('TRANSPARENCY SETTINGS', 0x12c, 0x53, COLORS.text);
+        y = 0x62;
+      }
+      if (row.action && !rows[i - 1].action) y += 6;
+      ys.push(y);
+      y += row.color ? 11 : 12;
+    });
+    rows.forEach((row, i) => {
+      const sel = i === this.themeRow;
+      const a = sel ? 1 : ALPHA_M;
+      let label = row.label;
+      if (row.action === 'delete' && sel && this.themeConfirm) label = `Delete Theme - press ${this.glyph('accept')} again`;
+      r.text(label, 2, ys[i], row.action ? COLORS.warning : COLORS.text, a);
+      if (row.text) {
+        r.text(th[row.text], 0x96, ys[i], sel ? COLORS.warning : COLORS.text, a);
+        if (i === 0 && sel) r.text('<>', 0x96 + th.NAME.length * 8 + 6, ys[i], COLORS.warning);
+      }
+      if (!row.color) return;
+      const key = row.color.key;
+      const [cr, cg, cb] = th.colors[key];
+      const trans = th.trans[key] || [];
+      const chan = (c, s, x) => r.text(s, x, ys[i], sel && this.themeChannel === c ? COLORS.warning : COLORS.text, sel ? 1 : ALPHA_M);
+      chan(0, `R:${cr}`, 0x96);
+      chan(1, `G:${cg}`, 0xbe);
+      chan(2, `B:${cb}`, 0xe6);
+      r.rect(0x113, ys[i] - 1, 10, 10, c5(cr, cg, cb));
+      ['N', 'M', 'H'].slice(0, row.color.trans).forEach((n, k) => chan(3 + k, `${n}:${trans[k]}`, 0x12c + k * 0x32));
+      if (key !== 'background') {
+        ['A', 'B', 'C'].slice(0, row.color.trans).forEach((ch, k) => {
+          r.text(ch, 0x1c2 + k * 8, ys[i], c5(cr, cg, cb), trans[k] / 255);
+        });
+      }
+    });
+    const b = a => this.glyph(a);
+    const row = rows[this.themeRow];
+    let help = `${b('dpad')} Up/Dn:Select`;
+    if (this.themeRow === 0) help += `  ${b('dpad')} Left/Right:Change Theme`;
+    if (row.color) help += `  ${b('dpad')} Left/Right:-/+ Adjust  ${b('accept')}/${b('pageRight')}:Next Value`;
+    r.smallCenter(help, 0xf6, COLORS.text);
+    r.smallCenter(`${b('accept')}:Accept  ${b('back')}:Back`, 0x100, COLORS.text);
+  }
+
+  drawSprites(r) {
+    this.drawDemo(r);
+    r.dim(0.8);
+    this.drawHeader(r, 'OPTIONS - THEMES - SPRITES');
+    const sheet = this.sprites.sheet;
+    const scale = Math.min(1, 0xe0 / sheet.height, (SCREEN_W - 8) / sheet.width);
+    const w = sheet.width * scale, h = sheet.height * scale;
+    r.ctx.drawImage(sheet, Math.round((SCREEN_W - w) / 2), 0x12, w, h);
+    r.small(`${SPRITES.length} Sprites Imported`, 2, 0x100, COLORS.alt);
+    r.smallRight(`${this.glyph('back')}:Back`, 0x100, COLORS.text);
   }
 
   drawPause(r) {
@@ -1182,7 +1868,7 @@ class App {
       r.center(line, 0x50 + i * 11, COLORS.text, s ? 1 : ALPHA_H);
     }
     const b = a => this.glyph(a);
-    r.smallCenter(`${b('pageLeft')}:Prev Page  ${b('pageRight')}:Next Page  ${b('dpad')}:Change  ${b('back')}:Back`, 0x100, COLORS.text);
+    r.smallCenter(`${b('pageLeft')}:Prev Page  ${b('pageRight')}:Next Page  ${b('triangle')}:Reset High Scores  ${b('back')}:Back`, 0x100, COLORS.text);
   }
 
   drawInstructions(r) {

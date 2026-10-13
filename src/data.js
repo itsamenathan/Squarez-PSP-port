@@ -51,9 +51,10 @@ export const SND = {
 };
 export const SONGS = ['pattern01', 'pattern02'];
 
-// theme.txt, 5-bit colour channels.
-const c5 = (r, g, b) => `rgb(${Math.round(r * 255 / 31)},${Math.round(g * 255 / 31)},${Math.round(b * 255 / 31)})`;
+// theme.txt, 5-bit colour channels. The theme editor rewrites COLORS in place.
+export const c5 = (r, g, b) => `rgb(${Math.round(r * 255 / 31)},${Math.round(g * 255 / 31)},${Math.round(b * 255 / 31)})`;
 export const COLORS = {
+  background: c5(0, 0, 0),
   text: c5(31, 31, 31),
   alt: c5(24, 24, 24),
   important: c5(31, 0, 0),
@@ -61,6 +62,32 @@ export const COLORS = {
   special: c5(0, 0, 31),
   timer: c5(24, 24, 24),
   log: c5(24, 24, 24),
+};
+
+// Theme editor rows (Options > Themes). `key` names the COLORS entry, `theme` the theme.txt
+// prefix; text colours also carry transparency (TRANS_TEXTN, plus M and H for plain text).
+export const THEME_COLORS = [
+  { key: 'background', theme: 'BACKGROUND', label: 'Background Color', trans: 0 },
+  { key: 'text', theme: 'TEXT', label: 'Text Color', trans: 3 },
+  { key: 'alt', theme: 'TEXTALT', label: 'Text Color (Alt)', trans: 1 },
+  { key: 'important', theme: 'TEXTIMPORTANT', label: 'Important Text', trans: 1 },
+  { key: 'warning', theme: 'TEXTWARNING', label: 'Warning Text', trans: 1 },
+  { key: 'special', theme: 'TEXTSPECIAL', label: 'Special Text', trans: 1 },
+  { key: 'timer', theme: 'TEXTTIMER', label: 'Timer Text', trans: 1 },
+  { key: 'log', theme: 'TEXTLOG', label: 'Log Text', trans: 1 },
+];
+
+// themes/default/theme.txt
+export const DEFAULT_THEME = {
+  NAME: 'SQUAREZ', AUTHOR: 'SOCALS', DESCRIPTION: 'DEFAULT',
+  colors: {
+    background: [0, 0, 0], text: [31, 31, 31], alt: [24, 24, 24], important: [31, 0, 0],
+    warning: [31, 31, 3], special: [0, 0, 31], timer: [24, 24, 24], log: [24, 24, 24],
+  },
+  trans: {
+    text: [255, 160, 128], alt: [255], important: [255], warning: [255], special: [255],
+    timer: [255], log: [200],
+  },
 };
 
 // Custom game setting keys, in the order the EBOOT stores them (MODSETTING index).
@@ -71,6 +98,26 @@ export const SETTING_KEYS = [
   'GRENADEPILL', 'GRENADEHURT', 'GRENADEBONUS', 'GRENADEPILLQTY', 'BONUSLIFESPAWN',
   'BOMBNUKE', 'BOMBFREEZE', 'BOMBSCATTER', 'BOMBCLUSTER', 'BOMBCLUSTERSTORM', 'BOMBRAGE',
 ];
+
+// Custom game editor labels, in SETTING_KEYS order (table at 0x0897d16c).
+export const SETTING_LABELS = [
+  'Allow Turbo (0=No/1=Yes)', 'Allow Slow (0=No/1=Yes)', 'Allow Rage (0=No/1=Yes)', 'Powerup Spawn Min',
+  'Powerup Spawn Slide (0=None)', 'Default Enemy Spawn', 'Blocker Spawn', 'Smart-Blocker Spawn',
+  'Generator Spawn', 'Gen Baby Spawn', 'Gen Bomb Spawn', 'Enemy Hive Spawn', 'Bomb Spawn', 'Grenade Spawn',
+  'Grenade Start Qty', 'Grenade Powerup Qty', 'Grenade Pills (0=No/1=Yes)', 'Grenades Hurt (0=No/1=Yes)',
+  'Grenade Bonus Qty', 'Grenade Pill Qty', 'Bonus Life Spawn', 'Bomb: Nukes (0=No/1=Yes)', 'Bomb: Freeze',
+  'Bomb: Scatter', 'Bomb: Cluster', 'Bomb: Cluster Storms', 'Bomb: Rage',
+];
+
+// On/off settings. The original lets every value climb without limit; these stop at 1.
+export const SETTING_FLAGS = new Set([
+  'ALLOWTURBO', 'ALLOWSLOW', 'ALLOWRAGE', 'GRENADEPILL', 'GRENADEHURT',
+  'BOMBNUKE', 'BOMBFREEZE', 'BOMBSCATTER', 'BOMBCLUSTER', 'BOMBCLUSTERSTORM', 'BOMBRAGE',
+]);
+
+// Characters the on-screen text entry cycles through (0x089a4f10).
+export const TEXT_CHARS = ' ABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890.';
+export const TEXT_MAX = 39;
 
 export const ENEMY_NAMES = [
   null, 'ENEMYDEFAULT', 'ENEMYBLOCKER', 'ENEMYSMARTBLOCKER', 'ENEMYGENERATOR', 'ENEMYGENBABY',
@@ -196,6 +243,30 @@ export function parseGameFile(text) {
   return game;
 }
 
+// Write a game back out in the custom/*.TXT format, as "Save Custom File" does (0x0898211c).
+export function serializeGameFile(game) {
+  const lines = [`NAME=${game.NAME}`, `AUTHOR=${game.AUTHOR}`, `DESCRIPTION=${game.DESCRIPTION}`];
+  for (const k of SETTING_KEYS) lines.push(`${k}=${game.settings[k] || 0}`);
+  for (const e of game.script) {
+    if (e.kind === 'ADDENEMY') lines.push(`SCRIPT=${e.score},ADDENEMY,${ENEMY_NAMES[e.type]}`);
+    else if (e.kind === 'MODSETTING') lines.push(`SCRIPT=${e.score},MODSETTING,${e.key},${e.value}`);
+    else if (e.kind === 'WINGAME') lines.push(`SCRIPT=${e.score},WINGAME`);
+    else if (e.kind === 'GAMETIMER') lines.push(`SCRIPT=${e.score},GAMETIMER,${e.seconds}`);
+  }
+  return lines.join('\r\n') + '\r\n';
+}
+
+// "New Game" in the custom game menu starts from these values (FUN_089071e0 / FUN_089075f0).
+export function newCustomGame(file) {
+  const g = parseGameFile('');
+  g.NAME = 'UNTITLED';
+  g.file = file;
+  g.settings = settings([
+    1, 1, 1, 5, 10, 1, 15, 22, 26, 24, 12, 24, 10, 35, 3, 4, 0, 0, 2, 1, 125, 1, 1, 1, 1, 1, 1,
+  ]);
+  return g;
+}
+
 function builtin(name, description, values, script = '') {
   const g = parseGameFile(script);
   g.NAME = name;
@@ -236,6 +307,41 @@ export const CUSTOM_FILES = [
 
 export const TIMED_OPTIONS = [0, 180, 120, 60];
 
+// Stats screen rows in the original's order (labels at 0x0897a6b0). Times are seconds.
+// A row with `sum` adds up the per-mode rows that share its prefix.
+const STAT_MODE_NAMES = ['Classic', 'Arcade', 'Survival', 'Bomber', 'Custom'];
+const STAT_MODES = [
+  ...STAT_MODE_NAMES.map(m => ({ id: `${m.toLowerCase()}:0`, label: m })),
+  ...STAT_MODE_NAMES.flatMap(m => TIMED_OPTIONS.filter(Boolean)
+    .map(t => ({ id: `${m.toLowerCase()}:${t}`, label: `${m} Timed ${t / 60}:00` }))),
+];
+export const STATS = [
+  { key: 'running', label: 'Total Running Time', time: true },
+  { key: 'time', label: 'Total Time Played', time: true, sum: true },
+  ...STAT_MODES.map(m => ({ key: `time:${m.id}`, label: `${m.label} - Time Played`, time: true })),
+  { key: 'games', label: 'Total Games Played', sum: true },
+  ...STAT_MODES.map(m => ({ key: `games:${m.id}`, label: `${m.label} - Games Played` })),
+  { key: 'pixels', label: 'Total Pixels Travelled' },
+  { key: 'pills', label: 'Pills Collected' },
+  { key: 'powerups', label: 'Powerups Collected' },
+  { key: 'bonusLives', label: 'Bonus Lives Collected' },
+  { key: 'grenades', label: 'Grenades Collected' },
+  { key: 'kill:1', label: 'Enemies Destroyed' },
+  { key: 'kill:2', label: 'Blockers Destroyed' },
+  { key: 'kill:3', label: 'Smart Blockers Destroyed' },
+  { key: 'kill:4', label: 'Generator Blockers Destroyed' },
+  { key: 'kill:5', label: 'Baby Generators Destroyed' },
+  { key: 'kill:6', label: 'Bomb Blockers Destroyed' },
+  { key: 'kill:7', label: 'Hives Destroyed' },
+  { key: 'bomb:1', label: 'Nukes Exploded' },
+  { key: 'bomb:2', label: 'Freeze Bombs Exploded' },
+  { key: 'bomb:3', label: 'Scatter Bombs Exploded' },
+  { key: 'bomb:4', label: 'Cluster Bombs Exploded' },
+  { key: 'bomb:5', label: 'Cluster Storm Bombs Exploded' },
+  { key: 'grenadesExploded', label: 'Grenades Exploded' },
+  { key: 'bomb:6', label: 'Rage Bombs Acquired' },
+];
+
 export const INSTRUCTIONS = [
   'The object of Squarez is to move your blue square over green squares. When you collect a',
   'green square an enemy red square will appear. If you crash into a red square your game will',
@@ -251,7 +357,7 @@ export const INSTRUCTIONS = [
   'BOMBER MODE: No powerups either. Collect pills quickly to receive grenade bonuses. Once the',
   'pill timer is gone you lose your grenade bonus. Collecting the pill very quickly will award',
   'an extra grenade bonus! Unlock it by scoring 150 in Arcade mode.',
-  'CUSTOM MODE: Play the bundled custom game files.',
+  'CUSTOM MODE: Allows you to play and create your own unique custom games.',
   'TIMED MODE: All games playable in 3:00, 2:00 and 1:00 time limits.',
 ];
 

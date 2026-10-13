@@ -38,6 +38,11 @@ export class Game {
     this.reset();
   }
 
+  // Lifetime counters for the Stats screen; the menu demo doesn't count.
+  stat(key, n = 1) {
+    if (this.opts.scoreKey !== 'demo' && n) this.app.addStat(key, n);
+  }
+
   // FUN_0891b92c
   reset() {
     const s = this.settings;
@@ -85,6 +90,9 @@ export class Game {
     this.log = [];
     this.highScore = this.app.bestScore(this.opts.scoreKey);
     this.recorded = false;
+    // Starting with cheat mode on already counts as cheating (FUN_0891b92c seeds DAT_089a6bb8).
+    this.cheated = this.app.cheats.on;
+    this.cheatHeld = false;
   }
 
   get secs() { return Math.floor(this.frames / 60); }
@@ -95,8 +103,8 @@ export class Game {
     return SPR.PLAYER;
   }
 
-  message(text, color = COLORS.log) {
-    if (!this.app.options.messages) return;
+  message(text, color = COLORS.log, always = false) {
+    if (!always && !this.app.options.messages) return;
     this.log.push({ text, color, ttl: 240 });
     if (this.log.length > 4) this.log.shift();
   }
@@ -277,11 +285,13 @@ export class Game {
     if (this.state !== 0) return;
     const sens = this.turbo || this.app.options.sensitivity;
     const ax = input.axisX, ay = input.axisY;
+    const x0 = this.px, y0 = this.py;
     if (!this.moved && (ax < DEADZONE_LO || ax > DEADZONE_HI || ay < DEADZONE_LO || ay > DEADZONE_HI)) this.moved = true;
     if (ax < DEADZONE_LO) this.px = Math.max(0, this.px - Math.trunc((DEADZONE_LO - ax) / sens));
     else if (ax > DEADZONE_HI) this.px = Math.min(FIELD_RIGHT - this.psize, this.px + Math.trunc((ax - DEADZONE_HI) / sens));
     if (ay < DEADZONE_LO) this.py = Math.max(0, this.py - Math.trunc((DEADZONE_LO - ay) / sens));
     else if (ay > DEADZONE_HI) this.py = Math.min(FIELD_BOTTOM - this.psize, this.py + Math.trunc((ay - DEADZONE_HI) / sens));
+    this.stat('pixels', Math.abs(this.px - x0) + Math.abs(this.py - y0));
   }
 
   // FUN_08924af0 (in-game part)
@@ -300,12 +310,37 @@ export class Game {
     } else {
       this.turbo = 0;
     }
+    // With cheat mode on, R1 plus a face button is a cheat instead of the usual action.
+    this.cheatHeld = this.app.cheats.on && input.held('pageRight') && this.state !== 1;
+    if (this.cheatHeld) { this.cheatInput(input); return; }
     if (input.pressed('grenade')) {
       if (this.state === 1 && this.lives > 0) this.revive();
       else if (this.state === 2) { this.state = 0; }
       else if (this.state === 0 && this.grenadeCount > 0) { this.grenadeCount--; this.dropGrenade(); this.moved = true; }
     }
     if (input.pressed('rage') && this.state === 0 && this.rageBar > 0 && s.ALLOWRAGE) this.startRage();
+  }
+
+  // In-game cheats (FUN_08924af0): R+○ life, R+□ god mode, R+✕ turbo, R+△ grenade.
+  cheatInput(input) {
+    const c = this.app.cheats;
+    const say = text => { this.cheated = true; this.message(text, COLORS.log, true); };
+    if (input.pressed('slow') && this.lives < 100) {
+      this.lives++;
+      say('Bonus life cheat!');
+    }
+    if (input.pressed('grenade')) {
+      c.god = !c.god;
+      say(c.god ? 'God mode enabled!' : 'God mode disabled');
+    }
+    if (input.pressed('turbo')) {
+      c.turbo = !c.turbo;
+      say(c.turbo ? 'Turbo mode enabled!' : 'Turbo mode disabled');
+    }
+    if (input.pressed('rage')) {
+      this.addGrenades(1);
+      say('Bonus grenade cheat!');
+    }
   }
 
   // FUN_0890770c
@@ -424,6 +459,7 @@ export class Game {
   // FUN_0890a708
   grenadeExplode(x, y) {
     this.sound(SND.EXPLOSION2);
+    this.stat('grenadesExploded');
     const type = this.settings.GRENADEHURT ? 1 : 0;
     for (const [vx, vy] of RING16) this.addShrapnel(x + 5, y + 5, vx, vy, type, rmod(19) + 11);
     this.explosionParticles(x + 5, y + 5, 0x1e);
@@ -470,6 +506,7 @@ export class Game {
   // FUN_0890fda8
   killEnemy(e) {
     e.dead = true;
+    this.stat(`kill:${e.type}`);
     this.sound(SND.CRASH);
     const r5 = () => rmod(5) + 3;
     for (let i = e.type === 2 ? 2 : 1; i > 0; i--) {
@@ -495,6 +532,7 @@ export class Game {
     this.bomb = null;
     this.bombLastScore = this.score;
     const t = this.bombType;
+    this.stat(`bomb:${t}`);
     let msg = true;
     if (t === 1) {
       this.sound(SND.EXPLOSION3);
@@ -552,6 +590,7 @@ export class Game {
         this.powerTimer = 0x32;
       }
       this.powerup = null;
+      this.stat('powerups');
       this.powerupCountdown = this.settings.POWERUPSPAWNSLIDE
         ? this.settings.POWERUPSPAWNSTART + Math.trunc(this.score / this.settings.POWERUPSPAWNSLIDE) : 0;
       this.sound(SND.POWERUP);
@@ -613,6 +652,7 @@ export class Game {
     if (this.grenadeCount >= 0x3c) return 0;
     if (this.grenadeCount + n > 0x3c) n = 0x3c - this.grenadeCount;
     this.grenadeCount += n;
+    this.stat('grenades', n);
     return n;
   }
 
@@ -785,6 +825,7 @@ export class Game {
     if (this.state === 0 && this.pill && this.touchesPlayer(this.pill.x, this.pill.y, 0xf, SPR.PILL)) {
       this.pill = null;
       this.score++;
+      this.stat('pills');
       this.runScript();
       if (this.highScore > 0 && this.score === this.highScore + 1) this.showBanner('NEW HIGH SCORE!', COLORS.important, 0x32);
       this.sound(SND.PILL);
@@ -811,6 +852,7 @@ export class Game {
     const bl = this.bonusLife;
     if (this.state === 0 && bl && this.touchesPlayer(bl.x, bl.y, 0x13, SPR.BONUS_LIFE)) {
       this.sound(SND.BONUSLIFE);
+      this.stat('bonusLives');
       if (this.lives < 100) this.lives++;
       this.bonusLife = null;
       this.bonusMsg = 0x1e;
@@ -889,8 +931,7 @@ export class Game {
       r.small(String(g.fuse), g.x + (g.fuse < 10 ? 5 : 3), g.y + 3, g.fuse < 10 ? COLORS.important : COLORS.timer);
     }
     for (const e of this.enemies) r.sprite(this.enemySprite(e), e.x, e.y);
-    for (const s of this.shrapnel) r.sprite(SHRAP_SPRITE[s.type], s.x, s.y);
-    for (const p of this.particles) r.sprite(p.type === 1 ? SPR.PARTICLE_BIG : PARTICLE_SPRITES[p.family][p.shade], p.x, p.y);
+    this.drawEffects(r);
 
     // HUD
     r.text(`Squarez - ${this.title}`, 2, 2, COLORS.text);
@@ -931,7 +972,16 @@ export class Game {
     // Message log, newest at the bottom (FUN_0891b5b0).
     for (let i = 0; i < (this.paused ? 0 : this.log.length); i++) {
       const l = this.log[this.log.length - 1 - i];
-      r.text(l.text, 2, 0xf8 - i * 10, l.color, 200 / 255);
+      r.text(l.text, 2, 0xf8 - i * 10, l.color, r.alphaLog);
+    }
+
+    // Cheat HUD along the bottom edge (FUN_0892681c).
+    const cheats = this.app.cheats;
+    if (cheats.god) r.small('GodMode', 2, 0x101, COLORS.important);
+    if (cheats.turbo) r.small('Turbo', 0x2a, 0x101, COLORS.important);
+    if (this.cheatHeld) {
+      const g = a => this.app.glyph(a);
+      r.smallCenter(`${g('grenade')}:God ${g('turbo')}:Turbo ${g('slow')}:Life ${g('rage')}:Grenade`, 0x101, COLORS.important);
     }
 
     if (this.state === 1) this.drawEnd(r);
@@ -939,6 +989,12 @@ export class Game {
       r.center('Revive', 0x2d, COLORS.text);
       r.smallCenter(`${this.app.glyph('grenade')}:Revive`, 0xeb, COLORS.text);
     }
+  }
+
+  // Shrapnel and particles; the menu demo draws these too for the bomb blocker easter egg.
+  drawEffects(r) {
+    for (const s of this.shrapnel) r.sprite(SHRAP_SPRITE[s.type], s.x, s.y);
+    for (const p of this.particles) r.sprite(p.type === 1 ? SPR.PARTICLE_BIG : PARTICLE_SPRITES[p.family][p.shade], p.x, p.y);
   }
 
   get title() {
