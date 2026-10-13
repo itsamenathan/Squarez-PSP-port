@@ -5,8 +5,8 @@
 // Face button symbols as SVG so all four match in size and weight, whatever the system font.
 const icon = shape => `<svg viewBox="0 0 24 24" aria-hidden="true">${shape}</svg>`;
 const BUTTONS = [
-  { id: 'triangle', label: icon('<polygon points="12,4 20.5,18.5 3.5,18.5"/>'), actions: ['rage'], cls: 'face top' },
-  { id: 'square', label: icon('<rect x="5" y="5" width="14" height="14"/>'), actions: ['grenade'], cls: 'face left' },
+  { id: 'triangle', label: icon('<polygon points="12,4 20.5,18.5 3.5,18.5"/>'), actions: ['rage', 'triangle'], cls: 'face top' },
+  { id: 'square', label: icon('<rect x="5" y="5" width="14" height="14"/>'), actions: ['grenade', 'square'], cls: 'face left' },
   { id: 'circle', label: icon('<circle cx="12" cy="12" r="7.5"/>'), actions: ['slow', 'back'], cls: 'face right' },
   { id: 'cross', label: icon('<path d="M5.5 5.5 18.5 18.5M18.5 5.5 5.5 18.5"/>'), actions: ['turbo', 'accept'], cls: 'face bottom' },
   { id: 'l1', label: 'L', actions: ['pageLeft'], cls: 'shoulder l' },

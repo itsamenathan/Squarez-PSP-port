@@ -74,6 +74,7 @@ Then open `http://<this-machine>:8080/` in a browser.
 | Pause menu | Esc / P | Start |
 | Menu select / back | Enter / Esc | A (✕) / B (○) |
 | Previous / next page | Q / E | L1 / R1 |
+| Menu □ / △ (editor, new game, resets) | F / C | X (□) / Y (△) |
 
 The menus follow the original's layout: ✕ plays the highlighted mode, and ○ (or Right) opens the timed choices (3:00, 2:00, 1:00).
 On-screen prompts switch between keyboard names and PSP button glyphs depending on what you last used.
@@ -106,4 +107,15 @@ axis values for troubleshooting.
 - Text uses the game's own bitmap fonts: the 8x8 font at `0x089a3bf4` (drawn 1x, 2x or 4x), the 5x10 font at `0x089a35b4`, and the PSP button glyphs from its 10x10 Shift-JIS font.
 - Particles follow `FUN_08907928`. They are 2x2 sprites whose shade darkens at life 40 and 20, spawned in the original patterns: about 70 per enemy kill and about 600 per grenade or bomb.
 
-Not ported: multiplayer (Wi-Fi/IR), USB mode, screenshots, the theme editor and the custom game editor.
+- Stats lists the original's 62 lifetime counters in the same order and format: run and play time, games per mode, pixels travelled, pickups, kills by enemy type and bombs used. L1+R1 resets them; this port asks you to press it twice. Hold R1 to scroll quickly.
+- The custom game editor uses the original's fields and new-game defaults (`FUN_089071e0`). It edits the name, author, description, filename and all 27 settings. It also shows the compiled script and saves the standard `.TXT` format. The original opened it from the pause menu; here it opens with □ (F) in the Custom menu, and △ (C) starts a new game. Saved games stay in `localStorage` and replace a bundled file with the same name. Export downloads the `.TXT`, and I imports one from the keyboard.
+- Options > Themes edits the `theme.txt` colours (R/G/B 0-31) and transparencies (N/M/H 0-255), saves named themes, and shows the sprite sheet.
+
+- Cheat codes are entered on the main menu with □ (F) and △ (C), from `FUN_0891a510`:
+  - □□□△△ toggles cheat mode and shows CHEAT ON.
+  - □△□□△ toggles the Bomber unlock. It uses the same saved flag as scoring 150 in Arcade, which Stats L1+R1 also clears.
+  - △△□□△ makes bomb blockers keep spawning behind the menu.
+
+  With cheat mode on, hold R1 (E) in a game and press □ for god mode, ✕ for turbo (turbo and slow in any mode), ○ for a life or △ for a grenade. Games played in cheat mode can't enter the high score list.
+
+Not ported: multiplayer (Wi-Fi/IR), USB mode, screenshots, the error log viewer, and theme folders with their own sprites, backgrounds and songs.
