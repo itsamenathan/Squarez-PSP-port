@@ -31,7 +31,7 @@ const BOMB_KEYS = ['BOMBNUKE', 'BOMBFREEZE', 'BOMBSCATTER', 'BOMBCLUSTER', 'BOMB
 export class Game {
   constructor(app, opts) {
     this.app = app;
-    this.opts = opts; // { mode, game, timed, scoreKey }
+    this.opts = opts; // { mode, game, timed, scoreKey, versus }
     this.mode = opts.mode;
     this.settings = { ...opts.game.settings };
     this.script = opts.game.script.slice().sort((a, b) => a.score - b.score);
@@ -88,7 +88,13 @@ export class Game {
     this.scriptTimer = false;
     this.turbo = 0;
     this.log = [];
-    this.highScore = this.app.bestScore(this.opts.scoreKey);
+    this.highScore = this.opts.versus ? 0 : this.app.bestScore(this.opts.scoreKey);
+    // Versus games start in state 3, Waiting for Opponent, until both players are ready (FUN_0891b92c).
+    if (this.opts.versus) this.state = 3;
+    this.oppScore = 0;
+    this.oppOut = false;
+    this.out = false;
+    this.timeUp = false;
     this.recorded = false;
     // Starting with cheat mode on already counts as cheating (FUN_0891b92c seeds DAT_089a6bb8).
     this.cheated = this.app.cheats.on;
@@ -167,6 +173,24 @@ export class Game {
     every(s.GENBABYSPAWN, 5);
     every(s.ENEMYSPAWN, 1);
     every(s.HIVESPAWN, 7);
+  }
+
+  // Versus games (FUN_089229dc): the opponent's score drives our spawns. Each point of a small
+  // rise runs the spawn check once; a jump of 15 or more is a resync and only updates the count.
+  // Nothing spawns while we're out of the game.
+  opponentScored(score) {
+    const d = score - this.oppScore;
+    if (d >= 1 && d <= 14 && !(this.state !== 0 && this.lives <= 0)) {
+      for (let i = 0; i < d; i++) this.spawnForScore(++this.oppScore);
+    }
+    this.oppScore = score;
+  }
+
+  // Both players are ready: play starts at once, timer included (the original sets the
+  // moved flag here rather than waiting for the first move).
+  startVersus() {
+    this.state = 0;
+    this.moved = true;
   }
 
   // FUN_0890b6cc
@@ -395,6 +419,9 @@ export class Game {
   die(win = false) {
     if (this.state === 1) return;
     this.state = 1;
+    // In a versus game, a death with no lives left puts us out, which ends the opponent's game
+    // too (FUN_089133b4 sets flag 2). Running out of time doesn't.
+    if (!win && this.lives <= 0 && this.gameTimer !== 0) this.out = true;
     if (!win) this.sound(SND.DEATH);
     if (win || this.lives <= 0 || this.gameTimer === 0) this.finish();
   }
@@ -564,7 +591,15 @@ export class Game {
 
   update(input) {
     this.handleInput(input);
-    if (this.paused) return;
+    if (this.paused || this.state === 3) return;
+    // The opponent being out ends our game as soon as we're playing (FUN_089229dc). The original
+    // only sets the dead state, which with spare lives would offer Next Life; this ends it.
+    if (this.oppOut && this.state === 0 && this.moved) {
+      this.lives = 0;
+      this.state = 1;
+      this.finish();
+      return;
+    }
     this.frames++;
     const tick = this.f6 === 0;
     const running = this.alive;
@@ -632,6 +667,7 @@ export class Game {
     // Timed games and GAMETIMER scripts.
     if (this.gameTimer > 0 && this.state === 0 && this.moved) {
       if (--this.gameTimer === 0) {
+        this.timeUp = true;
         this.lives = 0;
         this.die(!this.scriptTimer);
       }
@@ -846,7 +882,8 @@ export class Game {
         if (this.grenadeCount >= 0x3c) this.showBanner('MAX GRENADES REACHED!', COLORS.important, 0x6e);
       }
       if (!this.powerup && this.powerupCountdown > 0) this.powerupCountdown--;
-      this.spawnForScore(this.score);
+      // In a versus game our pills spawn enemies on the opponent's field instead (opponentScored).
+      if (!this.opts.versus) this.spawnForScore(this.score);
       if (this.score > 0 && this.score !== this.bonusLastScore && s.BONUSLIFESPAWN && this.score % s.BONUSLIFESPAWN === 0) this.spawnBonusLife();
     }
     const bl = this.bonusLife;
@@ -935,7 +972,8 @@ export class Game {
 
     // HUD
     r.text(`Squarez - ${this.title}`, 2, 2, COLORS.text);
-    r.center(`HIGH SCORE:${Math.max(this.highScore, 0)}`, 2, COLORS.text);
+    if (this.opts.versus) r.center(`OPPONENT:${this.oppScore}`, 2, COLORS.text);
+    else r.center(`HIGH SCORE:${Math.max(this.highScore, 0)}`, 2, COLORS.text);
     r.text(`SCORE:${this.score}`, 0x18b, 2, COLORS.text);
     if (this.gameTimer >= 0) {
       const t = Math.ceil(this.gameTimer / 60);
@@ -985,6 +1023,7 @@ export class Game {
     }
 
     if (this.state === 1) this.drawEnd(r);
+    else if (this.state === 3) this.app.drawVersusWait(r);
     else if (this.state === 2) {
       r.center('Revive', 0x2d, COLORS.text);
       r.smallCenter(`${this.app.glyph('grenade')}:Revive`, 0xeb, COLORS.text);
@@ -1013,6 +1052,10 @@ export class Game {
       return;
     }
     r.dim(0.4);
+    if (this.opts.versus) {
+      this.app.drawVersusEnd(r, this);
+      return;
+    }
     if (this.won) {
       if (this.mode.id === 'custom') {
         r.center('You Beat', 0x19, COLORS.important);

@@ -118,4 +118,16 @@ axis values for troubleshooting.
 
   With cheat mode on, hold R1 (E) in a game and press □ for god mode, ✕ for turbo (turbo and slow in any mode), ○ for a life or △ for a grenade. Games played in cheat mode can't enter the high score list.
 
-Not ported: multiplayer (Wi-Fi/IR), USB mode, screenshots, the error log viewer, and theme folders with their own sprites, backgrounds and songs.
+- Multiplayer is the original's two-player versus game, following its network code (`FUN_089229dc`, `FUN_08922f28`):
+  - Each player has their own field. Outside multiplayer, your pills spawn enemies on your own field. In a versus game, the opponent's score spawns them instead: each point of a rise of 1-14 runs the spawn check once, and a bigger jump only updates the count. Nothing spawns while you're out with no lives left.
+  - The HUD shows `OPPONENT:` where the high score usually is.
+  - A game starts on Waiting for Opponent and begins for both players when both are ready. The timer starts at once, not on the first move.
+  - The last player standing wins. Dying with no lives left sends an out flag, and the opponent's game ends as soon as it arrives. The results show Game Over, with You Win! above it if the opponent is out and You Lose! otherwise. Scores don't decide the result.
+  - A timed game running out doesn't send the out flag, so if both players survive the clock, both see You Lose!. That's how the original behaves.
+  - Restart on the results screen goes back to Waiting for Opponent until the other player restarts too.
+  - If the connection drops, CONNECTION LOST shows mid-screen. The game carries on, but nothing spawns from the opponent any more.
+  - The original's Host Game and Host Timed Game are one Host Game here, with a timer setting.
+
+  The original connected over Wi-Fi by typing the host's IP address. A browser can't accept incoming connections, so this port uses WebRTC through [PeerJS](https://peerjs.com/) 1.5.5, stored in `src/vendor/` and loaded only when multiplayer is opened. The host gets a four-letter room code, and the other player enters it under Join Game: D-pad Down/Up changes the letter, ✕ adds it and ○ deletes, or type it on a keyboard. The game joins as soon as the fourth letter is in. The free public PeerJS server (`0.peerjs.com`) introduces the two browsers, and game data then goes directly between them. When a network blocks a direct connection, it goes through PeerJS's public TURN relay. Both of these are free services with no uptime guarantee. Multiplayer needs an internet connection, works the same from GitHub Pages and from `serve.py`, and is the same for any two devices. Where this port differs or guesses: the original only sets the dead state when the opponent goes out, so a survivor with spare lives would be offered Next Life and then ended again on reviving; this port ends the game straight away. Pausing doesn't stop the opponent, Restart is left out of the pause menu, ○ leaves a game that is still waiting for the opponent, custom games can't be played in versus, and versus scores stay out of the high score lists.
+
+Not ported: IR multiplayer, USB mode, screenshots, the error log viewer, and theme folders with their own sprites, backgrounds and songs.
