@@ -1521,6 +1521,7 @@ class App {
       g.opponentScored(score);
       mp.oppOver = true;
       mp.oppFinal = score;
+      g.opponentOut(score);
     } else if (msg.t === 'rematch' && g) {
       mp.oppRematch = true;
       this.checkRematch();
@@ -1533,6 +1534,8 @@ class App {
     mp.link.close();
     if (this.screen === 'game') {
       mp.lost = reason;
+      // Play on with single player spawns; there's no final score to beat.
+      if (this.game && !this.game.oppOut) this.game.opponentOut();
       this.toast(reason === 'left' ? 'Opponent left the game' : 'CONNECTION LOST');
     } else {
       mp.status = 'error';
@@ -2027,8 +2030,8 @@ class App {
     [
       'Versus play for two. Every pill you collect sends enemies',
       "to your opponent's screen, and every pill they collect",
-      'sends enemies to yours. When both players are out (or',
-      'the timer ends), the higher score wins.',
+      'sends enemies to yours. Once a player is out, the other',
+      "plays on alone and wins by beating the first player's score.",
       '',
       'The host gets a room code to give the other player.',
       'Players are connected through the free PeerJS service.',
@@ -2076,7 +2079,7 @@ class App {
     if (!mp || g.recorded || g.paused) return;
     let text = null;
     if (mp.lost) text = mp.lost === 'left' ? 'OPPONENT LEFT' : 'CONNECTION LOST';
-    else if (mp.oppOver) text = `OPPONENT IS OUT WITH ${mp.oppFinal}`;
+    else if (mp.oppOver) text = `OPPONENT IS OUT WITH ${mp.oppFinal} - BEAT IT TO WIN`;
     if (text) r.smallCenter(text, 0x18, mp.lost ? COLORS.important : COLORS.warning);
   }
 

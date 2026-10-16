@@ -90,6 +90,8 @@ export class Game {
     this.log = [];
     this.highScore = this.opts.versus ? 0 : this.app.bestScore(this.opts.scoreKey);
     this.oppScore = 0;
+    this.oppOut = false;
+    this.oppFinal = null;
     this.recorded = false;
     // Starting with cheat mode on already counts as cheating (FUN_0891b92c seeds DAT_089a6bb8).
     this.cheated = this.app.cheats.on;
@@ -178,6 +180,23 @@ export class Game {
       for (let i = 0; i < d; i++) this.spawnForScore(++this.oppScore);
     }
     this.oppScore = score;
+  }
+
+  // Once the opponent is out (or gone), nothing else would spawn here, so our own pills spawn
+  // enemies again. Passing their final score wins at once; the result can't change after that.
+  opponentOut(score = null) {
+    this.oppOut = true;
+    this.oppFinal = score;
+    this.checkVersusWin();
+  }
+
+  checkVersusWin() {
+    if (!this.oppOut || this.oppFinal === null || this.score <= this.oppFinal || this.recorded) return;
+    this.won = true;
+    this.lives = 0;
+    // Also ends the game while we're waiting to use a spare life.
+    if (this.state === 1) this.finish();
+    else this.die(true);
   }
 
   // FUN_0890b6cc
@@ -857,8 +876,10 @@ export class Game {
         if (this.grenadeCount >= 0x3c) this.showBanner('MAX GRENADES REACHED!', COLORS.important, 0x6e);
       }
       if (!this.powerup && this.powerupCountdown > 0) this.powerupCountdown--;
-      // In a versus game our pills spawn enemies on the opponent's field instead (opponentScored).
-      if (!this.opts.versus) this.spawnForScore(this.score);
+      // In a versus game our pills spawn enemies on the opponent's field instead (opponentScored),
+      // until the opponent is out.
+      if (!this.opts.versus || this.oppOut) this.spawnForScore(this.score);
+      this.checkVersusWin();
       if (this.score > 0 && this.score !== this.bonusLastScore && s.BONUSLIFESPAWN && this.score % s.BONUSLIFESPAWN === 0) this.spawnBonusLife();
     }
     const bl = this.bonusLife;
