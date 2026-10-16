@@ -716,7 +716,7 @@ const SCRIPT_ROWS = 18;
 const CUSTOM_ROWS = 8;
 
 const PAUSE_ITEMS = ['Resume Game', 'Background', 'Music', 'Restart Game', 'Exit Game'];
-// A versus game can't restart on its own; the results screen offers a rematch instead.
+// A versus game restarts from its results screen, once both players choose Restart.
 const VERSUS_PAUSE_ITEMS = PAUSE_ITEMS.filter(i => i !== 'Restart Game');
 
 // Multiplayer (versus) setup. Custom games aren't offered because the guest may not have the file.
@@ -925,10 +925,7 @@ class App {
   gameEnded(game) {
     if (game.opts.versus) {
       this.entry = { done: true, rank: -1, cooldown: 45 };
-      if (this.mp) {
-        this.mp.over = true;
-        this.mp.link.send({ t: 'over', score: game.score });
-      }
+      if (this.mp && game.out) this.mp.link.send({ t: 'out' });
       return;
     }
     // Games played with cheats don't make the high score list (DAT_089a6bb8).
@@ -1496,7 +1493,7 @@ class App {
     mp.error = err.message;
   }
 
-  // The host picks the game; sending it to the guest starts a match on both sides.
+  // The host picks the game; sending it to the guest puts both players on Waiting for Opponent.
   sendHello() {
     const mp = this.mp;
     mp.link.send({ t: 'hello', v: VERSUS_VERSION, mode: mp.mode.id, timed: mp.timed });
@@ -1506,7 +1503,6 @@ class App {
   netMessage(msg) {
     const mp = this.mp;
     const g = this.screen === 'game' && this.game && this.game.opts.versus ? this.game : null;
-    const score = Number.isInteger(msg.score) && msg.score >= 0 ? msg.score : null;
     if (msg.t === 'hello' && mp.role === 'guest') {
       if (msg.v !== VERSUS_VERSION) {
         this.netFailed(mp, new Error('The other player has a different version. Reload both games'));
@@ -1515,16 +1511,13 @@ class App {
       mp.mode = VERSUS_MODES.find(m => m.id === msg.mode) || VERSUS_MODES[0];
       mp.timed = TIMED_OPTIONS.includes(msg.timed) ? msg.timed : 0;
       this.startVersus();
-    } else if (msg.t === 'score' && g && score !== null) {
-      g.opponentScored(score);
-    } else if (msg.t === 'over' && g && score !== null) {
-      g.opponentScored(score);
-      mp.oppOver = true;
-      mp.oppFinal = score;
-      g.opponentOut(score);
-    } else if (msg.t === 'rematch' && g) {
-      mp.oppRematch = true;
-      this.checkRematch();
+    } else if (msg.t === 'ready') {
+      mp.oppReady = true;
+      this.checkReady();
+    } else if (msg.t === 'score' && g && Number.isInteger(msg.score) && msg.score >= 0) {
+      g.opponentScored(msg.score);
+    } else if (msg.t === 'out' && g) {
+      g.oppOut = true;
     }
   }
 
@@ -1534,23 +1527,29 @@ class App {
     mp.link.close();
     if (this.screen === 'game') {
       mp.lost = reason;
-      // Play on with single player spawns; there's no final score to beat.
-      if (this.game && !this.game.oppOut) this.game.opponentOut();
-      this.toast(reason === 'left' ? 'Opponent left the game' : 'CONNECTION LOST');
     } else {
       mp.status = 'error';
       mp.error = reason === 'left' ? 'The other player left' : 'Connection lost';
     }
   }
 
+  // A new game (first or restarted) waits in state 3 until both players have sent ready.
   startVersus() {
     const mp = this.mp;
-    Object.assign(mp, {
-      status: 'playing', over: false, oppOver: false, oppFinal: 0, lost: null,
-      wantRematch: false, oppRematch: false, sent: -1,
-    });
+    mp.status = 'playing';
+    mp.sent = -1;
     this.text = null;
     this.startGame(mp.mode, mp.mode.game, mp.timed, true);
+    mp.link.send({ t: 'ready' });
+    this.checkReady();
+  }
+
+  checkReady() {
+    const mp = this.mp;
+    const g = this.game;
+    if (!mp.oppReady || !g || !g.opts.versus || g.state !== 3) return;
+    mp.oppReady = false;
+    g.startVersus();
   }
 
   sendScore() {
@@ -1558,11 +1557,6 @@ class App {
     if (!mp || mp.lost || this.game.score === mp.sent) return;
     mp.sent = this.game.score;
     mp.link.send({ t: 'score', score: mp.sent });
-  }
-
-  checkRematch() {
-    const mp = this.mp;
-    if (mp.role === 'host' && mp.over && mp.oppOver && mp.wantRematch && mp.oppRematch) this.sendHello();
   }
 
   leaveVersus() {
@@ -1576,17 +1570,12 @@ class App {
     if (input.pressed('back') || (this.mp.status === 'error' && input.pressed('accept'))) this.leaveVersus();
   }
 
+  // Results: ✕ restarts, which waits for the opponent to restart too; ○ goes back.
   updateVersusEnd(input) {
     const e = this.entry;
     if (e && e.cooldown > 0) { e.cooldown--; return; }
-    const mp = this.mp;
-    if (input.pressed('back')) {
-      this.leaveVersus();
-    } else if (input.pressed('accept') && !mp.lost && mp.oppOver && !mp.wantRematch) {
-      mp.wantRematch = true;
-      mp.link.send({ t: 'rematch' });
-      this.checkRematch();
-    }
+    if (input.pressed('back')) this.leaveVersus();
+    else if (input.pressed('accept') && !this.mp.lost) this.startVersus();
   }
 
   pauseItems() {
@@ -1626,6 +1615,7 @@ class App {
     if (g.opts.versus) this.sendScore();
     if (g.paused) { this.updatePause(input); return; }
     if (g.state === 1 && g.recorded && g.opts.versus) { this.updateVersusEnd(input); return; }
+    if (g.state === 3 && input.pressed('back')) { this.leaveVersus(); return; }
     if (g.state === 1 && g.recorded) {
       const e = this.entry;
       // Ignore input briefly so a button held at the moment of death can't skip the results.
@@ -2030,8 +2020,7 @@ class App {
     [
       'Versus play for two. Every pill you collect sends enemies',
       "to your opponent's screen, and every pill they collect",
-      'sends enemies to yours. Once a player is out, the other',
-      "plays on alone and wins by beating the first player's score.",
+      'sends enemies to yours. The last player standing wins.',
       '',
       'The host gets a room code to give the other player.',
       'Players are connected through the free PeerJS service.',
@@ -2072,42 +2061,32 @@ class App {
     r.smallCenter(`${b('back')}:Cancel`, 0x100, COLORS.text);
   }
 
-  // Connection and opponent status over a versus game in progress.
+  // CONNECTION LOST across the middle of the field (FUN_0892681c draws it at y=0xaa).
   drawVersusStatus(r) {
-    const mp = this.mp;
-    const g = this.game;
-    if (!mp || g.recorded || g.paused) return;
-    let text = null;
-    if (mp.lost) text = mp.lost === 'left' ? 'OPPONENT LEFT' : 'CONNECTION LOST';
-    else if (mp.oppOver) text = `OPPONENT IS OUT WITH ${mp.oppFinal} - BEAT IT TO WIN`;
-    if (text) r.smallCenter(text, 0x18, mp.lost ? COLORS.important : COLORS.warning);
+    if (this.mp && this.mp.lost && !this.game.paused) r.center('CONNECTION LOST', 0xaa, COLORS.important);
   }
 
-  // Versus results: "Waiting for Opponent" until both are out, then You Win! / You Lose!.
+  drawVersusWait(r) {
+    r.center('Waiting for Opponent', 0x2d, COLORS.text);
+    r.smallCenter(`${this.glyph('back')}:Back`, 0xeb, COLORS.text);
+  }
+
+  // Versus results (FUN_08915b5c): the usual Game Over, with You Win! above it when the
+  // opponent's last message said they were out, otherwise You Lose!.
   drawVersusEnd(r, game) {
-    const mp = this.mp;
     const b = a => this.glyph(a);
-    const opp = mp && mp.oppOver ? mp.oppFinal : game.oppScore;
-    if (mp && mp.oppOver) {
-      if (game.score > opp) r.center('You Win!', 0x2d, COLORS.important);
-      else if (game.score < opp) r.center('You Lose!', 0x2d, COLORS.text);
-      else r.center('Draw', 0x2d, COLORS.warning);
-    } else if (!mp || mp.lost) {
-      r.center(mp && mp.lost === 'left' ? 'Opponent Left' : 'Connection Lost', 0x2d, COLORS.important);
+    const scripted = game.won && !game.timeUp;
+    if (scripted && game.mode.id === 'custom') {
+      r.center('You Beat', 0x19, COLORS.important);
+      r.center(game.opts.game.NAME, 0x2d, COLORS.important);
     } else {
-      r.center('Waiting for Opponent', 0x2d, COLORS.text, (game.blink & 4) ? ALPHA_M : 1);
+      r.center(scripted ? 'You Win!' : 'Game Over', 0x2d, scripted ? COLORS.important : COLORS.text);
     }
+    r.center(game.oppOut ? 'You Win!' : 'You Lose!', 0x19, COLORS.important);
     r.center(`SCORE:${game.score}`, 0x50, COLORS.text);
-    r.center(`OPPONENT:${opp}${mp && !mp.oppOver && !mp.lost ? ' (playing)' : ''}`, 0x62, COLORS.text);
-    let help = `${b('back')}:Leave`;
-    if (mp && mp.oppOver && !mp.lost) {
-      if (mp.wantRematch) r.center('Waiting for opponent to accept...', 0x80, COLORS.alt);
-      else if (mp.oppRematch) r.center('Opponent wants a rematch!', 0x80, COLORS.warning);
-      if (!mp.wantRematch) help = `${b('accept')}:Rematch  ${help}`;
-    } else if (mp && mp.lost) {
-      r.center(mp.lost === 'left' ? 'Opponent left' : 'Connection lost', 0x80, COLORS.important);
-    }
-    r.smallCenter(help, 0xeb, COLORS.text);
+    r.center(`OPPONENT:${game.oppScore}`, 0x62, COLORS.text);
+    const lost = this.mp && this.mp.lost;
+    r.smallCenter(lost ? `${b('back')}:Back` : `${b('accept')}:Restart  ${b('back')}:Back`, 0xeb, COLORS.text);
   }
 
   drawPause(r) {
