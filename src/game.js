@@ -31,7 +31,7 @@ const BOMB_KEYS = ['BOMBNUKE', 'BOMBFREEZE', 'BOMBSCATTER', 'BOMBCLUSTER', 'BOMB
 export class Game {
   constructor(app, opts) {
     this.app = app;
-    this.opts = opts; // { mode, game, timed, scoreKey }
+    this.opts = opts; // { mode, game, timed, scoreKey, versus }
     this.mode = opts.mode;
     this.settings = { ...opts.game.settings };
     this.script = opts.game.script.slice().sort((a, b) => a.score - b.score);
@@ -88,7 +88,8 @@ export class Game {
     this.scriptTimer = false;
     this.turbo = 0;
     this.log = [];
-    this.highScore = this.app.bestScore(this.opts.scoreKey);
+    this.highScore = this.opts.versus ? 0 : this.app.bestScore(this.opts.scoreKey);
+    this.oppScore = 0;
     this.recorded = false;
     // Starting with cheat mode on already counts as cheating (FUN_0891b92c seeds DAT_089a6bb8).
     this.cheated = this.app.cheats.on;
@@ -167,6 +168,16 @@ export class Game {
     every(s.GENBABYSPAWN, 5);
     every(s.ENEMYSPAWN, 1);
     every(s.HIVESPAWN, 7);
+  }
+
+  // Versus games (FUN_089229dc): the opponent's score drives our spawns. Each point of a small
+  // rise runs the spawn check once; a jump of 15 or more is a resync and only updates the count.
+  opponentScored(score) {
+    const d = score - this.oppScore;
+    if (d >= 1 && d <= 14 && !this.recorded) {
+      for (let i = 0; i < d; i++) this.spawnForScore(++this.oppScore);
+    }
+    this.oppScore = score;
   }
 
   // FUN_0890b6cc
@@ -846,7 +857,8 @@ export class Game {
         if (this.grenadeCount >= 0x3c) this.showBanner('MAX GRENADES REACHED!', COLORS.important, 0x6e);
       }
       if (!this.powerup && this.powerupCountdown > 0) this.powerupCountdown--;
-      this.spawnForScore(this.score);
+      // In a versus game our pills spawn enemies on the opponent's field instead (opponentScored).
+      if (!this.opts.versus) this.spawnForScore(this.score);
       if (this.score > 0 && this.score !== this.bonusLastScore && s.BONUSLIFESPAWN && this.score % s.BONUSLIFESPAWN === 0) this.spawnBonusLife();
     }
     const bl = this.bonusLife;
@@ -935,7 +947,8 @@ export class Game {
 
     // HUD
     r.text(`Squarez - ${this.title}`, 2, 2, COLORS.text);
-    r.center(`HIGH SCORE:${Math.max(this.highScore, 0)}`, 2, COLORS.text);
+    if (this.opts.versus) r.center(`OPPONENT:${this.oppScore}`, 2, COLORS.text);
+    else r.center(`HIGH SCORE:${Math.max(this.highScore, 0)}`, 2, COLORS.text);
     r.text(`SCORE:${this.score}`, 0x18b, 2, COLORS.text);
     if (this.gameTimer >= 0) {
       const t = Math.ceil(this.gameTimer / 60);
@@ -1013,6 +1026,10 @@ export class Game {
       return;
     }
     r.dim(0.4);
+    if (this.opts.versus) {
+      this.app.drawVersusEnd(r, this);
+      return;
+    }
     if (this.won) {
       if (this.mode.id === 'custom') {
         r.center('You Beat', 0x19, COLORS.important);

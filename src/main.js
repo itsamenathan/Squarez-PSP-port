@@ -7,6 +7,7 @@ import {
 import { Game, DEADZONE_LO, DEADZONE_HI } from './game.js';
 import { FONT_8X8, FONT_5X10, BUTTONS } from './font.js';
 import { TouchControls } from './touch.js';
+import { Link, cleanRoomCode } from './net.js';
 
 const FRAME_MS = 1000 / 60;
 
@@ -685,6 +686,7 @@ function formatTime(secs) {
 // Main menu, laid out like FUN_0891405c: entries at x=0xcd, y=0x41 + 12 * i.
 const MENU_ITEMS = [
   ...MODES.map(m => ({ kind: 'mode', mode: m, label: m.label })),
+  { kind: 'screen', screen: 'multi', label: 'Multiplayer' },
   { kind: 'screen', screen: 'options', label: 'Options' },
   { kind: 'screen', screen: 'stats', label: 'Stats' },
   { kind: 'screen', screen: 'highscores', label: 'High Scores' },
@@ -714,6 +716,13 @@ const SCRIPT_ROWS = 18;
 const CUSTOM_ROWS = 8;
 
 const PAUSE_ITEMS = ['Resume Game', 'Background', 'Music', 'Restart Game', 'Exit Game'];
+// A versus game can't restart on its own; the results screen offers a rematch instead.
+const VERSUS_PAUSE_ITEMS = PAUSE_ITEMS.filter(i => i !== 'Restart Game');
+
+// Multiplayer (versus) setup. Custom games aren't offered because the guest may not have the file.
+const VERSUS_MODES = MODES.filter(m => m.id !== 'custom');
+const MULTI_ROWS = ['mode', 'timed', 'host', 'join'];
+const VERSUS_VERSION = 1;
 
 class App {
   constructor(canvas) {
@@ -753,6 +762,11 @@ class App {
     this.demo = null;
     this.entry = null;
     this.toasts = [];
+    // Versus play: the setup screen's choices and the current link (see hostGame/joinGame).
+    this.multiRow = 0;
+    this.multiMode = 1;
+    this.multiTimed = 0;
+    this.mp = null;
   }
 
   async start() {
@@ -897,10 +911,11 @@ class App {
     return this.scores[key].indexOf(entry);
   }
 
-  startGame(mode, game, timed) {
-    const scoreKey = this.scoreKey(mode, game, timed);
+  startGame(mode, game, timed, versus = false) {
+    // Versus games keep out of the high score lists, which are for single player rules.
+    const scoreKey = versus ? 'versus' : this.scoreKey(mode, game, timed);
     this.lastStart = { mode, game, timed };
-    this.game = new Game(this, { mode, game, timed, scoreKey });
+    this.game = new Game(this, { mode, game, timed, scoreKey, versus });
     this.addStat(`games:${mode.id}:${timed}`);
     this.entry = null;
     this.pauseIndex = 0;
@@ -908,6 +923,14 @@ class App {
   }
 
   gameEnded(game) {
+    if (game.opts.versus) {
+      this.entry = { done: true, rank: -1, cooldown: 45 };
+      if (this.mp) {
+        this.mp.over = true;
+        this.mp.link.send({ t: 'over', score: game.score });
+      }
+      return;
+    }
     // Games played with cheats don't make the high score list (DAT_089a6bb8).
     if (!game.cheated && this.qualifies(game.opts.scoreKey, game.score)) {
       this.entry = { letters: (this.lastInitials || [0, 0, 0]).slice(), pos: 0, done: false, rank: -1, cooldown: 45 };
@@ -941,6 +964,8 @@ class App {
     switch (this.screen) {
       case 'menu': this.updateMenu(input); break;
       case 'custom': this.updateCustom(input); break;
+      case 'multi': this.updateMulti(input); break;
+      case 'lobby': this.updateLobby(input); break;
       case 'editor': this.updateEditor(input); break;
       case 'script': this.updateScript(input); break;
       case 'stats': this.updateStats(input); break;
@@ -1402,11 +1427,175 @@ class App {
     }
   }
 
+  // --- multiplayer (versus) ---
+  // The original hosts over Wi-Fi and the joiner types the host's IP address. Browsers can't
+  // listen for connections, so a room code finds the host through the PeerJS server (net.js).
+
+  versusMode() { return VERSUS_MODES[this.multiMode]; }
+
+  updateMulti(input) {
+    const n = MULTI_ROWS.length;
+    if (input.nav('up')) this.multiRow = (this.multiRow + n - 1) % n;
+    if (input.nav('down')) this.multiRow = (this.multiRow + 1) % n;
+    const row = MULTI_ROWS[this.multiRow];
+    const step = input.nav('left') ? -1 : input.nav('right') ? 1 : 0;
+    if (row === 'mode' && (step || input.pressed('accept'))) {
+      const m = VERSUS_MODES.length;
+      do this.multiMode = (this.multiMode + (step || 1) + m) % m;
+      while (VERSUS_MODES[this.multiMode].locked && !this.bomberUnlocked());
+    } else if (row === 'timed' && (step || input.pressed('accept'))) {
+      const m = TIMED_OPTIONS.length;
+      this.multiTimed = (this.multiTimed + (step || 1) + m) % m;
+    } else if (row === 'host' && input.pressed('accept')) {
+      this.hostGame();
+    } else if (row === 'join' && input.pressed('accept')) {
+      this.openText('ENTER ROOM CODE', '', text => {
+        const code = cleanRoomCode(text);
+        if (code.length === 4) this.joinGame(code);
+        else this.toast('Room codes are 4 letters');
+      });
+    }
+    if (input.pressed('back')) this.screen = 'menu';
+  }
+
+  newLink(role) {
+    if (this.mp) this.mp.link.close();
+    const link = new Link();
+    const mp = { link, role, code: null, status: 'connecting', error: null, mode: null, timed: 0 };
+    this.mp = mp;
+    link.onPeer = () => { if (this.mp === mp) this.sendHello(); };
+    link.onMessage = msg => { if (this.mp === mp) this.netMessage(msg); };
+    link.onClose = reason => { if (this.mp === mp) this.netClosed(reason); };
+    this.screen = 'lobby';
+    return mp;
+  }
+
+  hostGame() {
+    const mp = this.newLink('host');
+    mp.mode = this.versusMode();
+    mp.timed = TIMED_OPTIONS[this.multiTimed];
+    mp.link.host().then(code => {
+      if (this.mp !== mp) return;
+      mp.code = code;
+      mp.status = 'waiting';
+    }).catch(err => this.netFailed(mp, err));
+  }
+
+  joinGame(code) {
+    const mp = this.newLink('guest');
+    mp.code = code;
+    // Once connected, the host's hello message starts the game.
+    mp.link.join(code).then(() => { if (this.mp === mp) mp.status = 'connected'; })
+      .catch(err => this.netFailed(mp, err));
+  }
+
+  netFailed(mp, err) {
+    if (this.mp !== mp) return;
+    mp.link.close();
+    mp.status = 'error';
+    mp.error = err.message;
+  }
+
+  // The host picks the game; sending it to the guest starts a match on both sides.
+  sendHello() {
+    const mp = this.mp;
+    mp.link.send({ t: 'hello', v: VERSUS_VERSION, mode: mp.mode.id, timed: mp.timed });
+    this.startVersus();
+  }
+
+  netMessage(msg) {
+    const mp = this.mp;
+    const g = this.screen === 'game' && this.game && this.game.opts.versus ? this.game : null;
+    const score = Number.isInteger(msg.score) && msg.score >= 0 ? msg.score : null;
+    if (msg.t === 'hello' && mp.role === 'guest') {
+      if (msg.v !== VERSUS_VERSION) {
+        this.netFailed(mp, new Error('The other player has a different version. Reload both games'));
+        return;
+      }
+      mp.mode = VERSUS_MODES.find(m => m.id === msg.mode) || VERSUS_MODES[0];
+      mp.timed = TIMED_OPTIONS.includes(msg.timed) ? msg.timed : 0;
+      this.startVersus();
+    } else if (msg.t === 'score' && g && score !== null) {
+      g.opponentScored(score);
+    } else if (msg.t === 'over' && g && score !== null) {
+      g.opponentScored(score);
+      mp.oppOver = true;
+      mp.oppFinal = score;
+    } else if (msg.t === 'rematch' && g) {
+      mp.oppRematch = true;
+      this.checkRematch();
+    }
+  }
+
+  netClosed(reason) {
+    const mp = this.mp;
+    // Close fully so a waiting host can't be joined by someone else mid-game.
+    mp.link.close();
+    if (this.screen === 'game') {
+      mp.lost = reason;
+      this.toast(reason === 'left' ? 'Opponent left the game' : 'CONNECTION LOST');
+    } else {
+      mp.status = 'error';
+      mp.error = reason === 'left' ? 'The other player left' : 'Connection lost';
+    }
+  }
+
+  startVersus() {
+    const mp = this.mp;
+    Object.assign(mp, {
+      status: 'playing', over: false, oppOver: false, oppFinal: 0, lost: null,
+      wantRematch: false, oppRematch: false, sent: -1,
+    });
+    this.text = null;
+    this.startGame(mp.mode, mp.mode.game, mp.timed, true);
+  }
+
+  sendScore() {
+    const mp = this.mp;
+    if (!mp || mp.lost || this.game.score === mp.sent) return;
+    mp.sent = this.game.score;
+    mp.link.send({ t: 'score', score: mp.sent });
+  }
+
+  checkRematch() {
+    const mp = this.mp;
+    if (mp.role === 'host' && mp.over && mp.oppOver && mp.wantRematch && mp.oppRematch) this.sendHello();
+  }
+
+  leaveVersus() {
+    if (this.mp) this.mp.link.close();
+    this.mp = null;
+    this.game = null;
+    this.screen = 'multi';
+  }
+
+  updateLobby(input) {
+    if (input.pressed('back') || (this.mp.status === 'error' && input.pressed('accept'))) this.leaveVersus();
+  }
+
+  updateVersusEnd(input) {
+    const e = this.entry;
+    if (e && e.cooldown > 0) { e.cooldown--; return; }
+    const mp = this.mp;
+    if (input.pressed('back')) {
+      this.leaveVersus();
+    } else if (input.pressed('accept') && !mp.lost && mp.oppOver && !mp.wantRematch) {
+      mp.wantRematch = true;
+      mp.link.send({ t: 'rematch' });
+      this.checkRematch();
+    }
+  }
+
+  pauseItems() {
+    return this.game && this.game.opts.versus ? VERSUS_PAUSE_ITEMS : PAUSE_ITEMS;
+  }
+
   updatePause(input) {
     const g = this.game;
-    if (input.nav('up')) this.pauseIndex = (this.pauseIndex + PAUSE_ITEMS.length - 1) % PAUSE_ITEMS.length;
-    if (input.nav('down')) this.pauseIndex = (this.pauseIndex + 1) % PAUSE_ITEMS.length;
-    const item = PAUSE_ITEMS[this.pauseIndex];
+    const items = this.pauseItems();
+    if (input.nav('up')) this.pauseIndex = (this.pauseIndex + items.length - 1) % items.length;
+    if (input.nav('down')) this.pauseIndex = (this.pauseIndex + 1) % items.length;
+    const item = items[this.pauseIndex];
     const step = input.nav('left') ? -1 : input.nav('right') ? 1 : 0;
     if (item === 'Background' && (step || input.pressed('accept'))) {
       this.options.background = this.options.background ? 0 : 1;
@@ -1423,6 +1612,7 @@ class App {
       const s = this.lastStart;
       this.startGame(s.mode, s.game, s.timed);
     } else if (item === 'Exit Game' && input.pressed('accept')) {
+      if (g.opts.versus) { this.leaveVersus(); return; }
       this.screen = 'menu';
       this.game = null;
     }
@@ -1430,7 +1620,9 @@ class App {
 
   updateGame(input) {
     const g = this.game;
+    if (g.opts.versus) this.sendScore();
     if (g.paused) { this.updatePause(input); return; }
+    if (g.state === 1 && g.recorded && g.opts.versus) { this.updateVersusEnd(input); return; }
     if (g.state === 1 && g.recorded) {
       const e = this.entry;
       // Ignore input briefly so a button held at the moment of death can't skip the results.
@@ -1560,8 +1752,11 @@ class App {
     switch (this.screen) {
       case 'menu': this.drawMenu(r); break;
       case 'custom': this.drawCustom(r); break;
+      case 'multi': this.drawMulti(r); break;
+      case 'lobby': this.drawLobby(r); break;
       case 'game':
         this.game.draw(r);
+        if (this.game.opts.versus) this.drawVersusStatus(r);
         if (this.game.paused) this.drawPause(r);
         break;
       case 'highscores': this.drawHighscores(r); break;
@@ -1812,6 +2007,106 @@ class App {
     r.smallRight(`${this.glyph('back')}:Back`, 0x100, COLORS.text);
   }
 
+  drawMulti(r) {
+    this.drawDemo(r);
+    r.dim(0.5);
+    this.drawHeader(r, 'MULTIPLAYER MODES');
+    const t = TIMED_OPTIONS[this.multiTimed];
+    const labels = {
+      mode: `Game Mode: ${this.versusMode().label}`,
+      timed: `Timer: ${t ? `${t / 60}:00` : 'OFF'}`,
+      host: 'Host Game',
+      join: 'Join Game',
+    };
+    MULTI_ROWS.forEach((row, i) => {
+      const sel = i === this.multiRow;
+      const y = 0x24 + i * 14 + (i >= 2 ? 8 : 0);
+      r.text(labels[row], 0x14, y, i >= 2 ? COLORS.warning : COLORS.text, sel ? 1 : ALPHA_M);
+      if (sel && i < 2) r.text('<>', 0x14 + labels[row].length * 8 + 6, y, COLORS.warning);
+    });
+    [
+      'Versus play for two. Every pill you collect sends enemies',
+      "to your opponent's screen, and every pill they collect",
+      'sends enemies to yours. When both players are out (or',
+      'the timer ends), the higher score wins.',
+      '',
+      'The host gets a room code to give the other player.',
+      'Players are connected through the free PeerJS service.',
+    ].forEach((l, i) => r.small(l, 0x14, 0x7c + i * 11, COLORS.alt));
+    const b = a => this.glyph(a);
+    r.smallCenter(`${b('dpad')} Up/Dn:Select  ${b('dpad')} Left/Right:Change  ${b('accept')}:Select  ${b('back')}:Back`, 0x100, COLORS.text);
+  }
+
+  drawLobby(r) {
+    this.drawDemo(r);
+    r.dim(0.6);
+    const mp = this.mp;
+    const host = mp.role === 'host';
+    this.drawHeader(r, host ? 'MULTIPLAYER - HOST GAME' : 'MULTIPLAYER - JOIN GAME');
+    const blink = (this.demo.frames >> 5) & 1;
+    const b = a => this.glyph(a);
+    if (mp.status === 'error') {
+      r.center('Unable to Connect', 0x50, COLORS.important);
+      r.smallCenter(mp.error || 'Connection failed', 0x66, COLORS.text);
+      r.smallCenter(`${b('back')}:Back`, 0x100, COLORS.text);
+      return;
+    }
+    if (host && mp.status === 'waiting') {
+      const t = mp.timed ? ` (${mp.timed / 60}:00)` : '';
+      r.center(`Hosting ${mp.mode.label} Game${t}`, 0x30, COLORS.text);
+      r.center('ROOM CODE', 0x50, COLORS.alt);
+      r.center(mp.code, 0x62, COLORS.warning, 1, 4);
+      r.center('Waiting for opponent...', 0xa0, COLORS.text, blink ? ALPHA_M : 1);
+      r.smallCenter('Your opponent picks Multiplayer > Join Game and enters this code.', 0xbc, COLORS.alt);
+    } else if (host) {
+      r.center('Connecting to the matchmaking server...', 0x60, COLORS.text, blink ? ALPHA_M : 1);
+    } else if (mp.status === 'connected') {
+      r.center(`Joined game ${mp.code}`, 0x50, COLORS.text);
+      r.center('Waiting for the host...', 0x64, COLORS.text, blink ? ALPHA_M : 1);
+    } else {
+      r.center(`Joining game ${mp.code}...`, 0x60, COLORS.text, blink ? ALPHA_M : 1);
+    }
+    r.smallCenter(`${b('back')}:Cancel`, 0x100, COLORS.text);
+  }
+
+  // Connection and opponent status over a versus game in progress.
+  drawVersusStatus(r) {
+    const mp = this.mp;
+    const g = this.game;
+    if (!mp || g.recorded || g.paused) return;
+    let text = null;
+    if (mp.lost) text = mp.lost === 'left' ? 'OPPONENT LEFT' : 'CONNECTION LOST';
+    else if (mp.oppOver) text = `OPPONENT IS OUT WITH ${mp.oppFinal}`;
+    if (text) r.smallCenter(text, 0x18, mp.lost ? COLORS.important : COLORS.warning);
+  }
+
+  // Versus results: "Waiting for Opponent" until both are out, then You Win! / You Lose!.
+  drawVersusEnd(r, game) {
+    const mp = this.mp;
+    const b = a => this.glyph(a);
+    const opp = mp && mp.oppOver ? mp.oppFinal : game.oppScore;
+    if (mp && mp.oppOver) {
+      if (game.score > opp) r.center('You Win!', 0x2d, COLORS.important);
+      else if (game.score < opp) r.center('You Lose!', 0x2d, COLORS.text);
+      else r.center('Draw', 0x2d, COLORS.warning);
+    } else if (!mp || mp.lost) {
+      r.center(mp && mp.lost === 'left' ? 'Opponent Left' : 'Connection Lost', 0x2d, COLORS.important);
+    } else {
+      r.center('Waiting for Opponent', 0x2d, COLORS.text, (game.blink & 4) ? ALPHA_M : 1);
+    }
+    r.center(`SCORE:${game.score}`, 0x50, COLORS.text);
+    r.center(`OPPONENT:${opp}${mp && !mp.oppOver && !mp.lost ? ' (playing)' : ''}`, 0x62, COLORS.text);
+    let help = `${b('back')}:Leave`;
+    if (mp && mp.oppOver && !mp.lost) {
+      if (mp.wantRematch) r.center('Waiting for opponent to accept...', 0x80, COLORS.alt);
+      else if (mp.oppRematch) r.center('Opponent wants a rematch!', 0x80, COLORS.warning);
+      if (!mp.wantRematch) help = `${b('accept')}:Rematch  ${help}`;
+    } else if (mp && mp.lost) {
+      r.center(mp.lost === 'left' ? 'Opponent left' : 'Connection lost', 0x80, COLORS.important);
+    }
+    r.smallCenter(help, 0xeb, COLORS.text);
+  }
+
   drawPause(r) {
     r.dim(0.35);
     r.center('PAUSED', 0x64, COLORS.text);
@@ -1819,7 +2114,7 @@ class App {
       Background: `Background: ${this.options.background ? 'IMAGE' : 'COLOR'}`,
       Music: `Music: ${this.options.music ? `${this.options.music} of ${SONGS.length}` : 'OFF'}`,
     };
-    PAUSE_ITEMS.forEach((item, i) => {
+    this.pauseItems().forEach((item, i) => {
       const sel = i === this.pauseIndex;
       r.text(values[item] || item, 0x14, 0x28 + i * 12, COLORS.text, sel ? 1 : ALPHA_M);
     });
