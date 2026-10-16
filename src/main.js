@@ -7,7 +7,7 @@ import {
 import { Game, DEADZONE_LO, DEADZONE_HI } from './game.js';
 import { FONT_8X8, FONT_5X10, BUTTONS } from './font.js';
 import { TouchControls } from './touch.js';
-import { Link, cleanRoomCode } from './net.js';
+import { Link, ROOM_LETTERS, ROOM_CODE_LENGTH } from './net.js';
 
 const FRAME_MS = 1000 / 60;
 
@@ -1221,8 +1221,50 @@ class App {
     if (accept) t.done(t.chars.join('').trim());
   }
 
+  // Room code entry for Join Game: D-pad Down/Up steps through the letters, ✕ adds the selected
+  // one, ○ deletes, and the code is used as soon as its last letter is in.
+  openCode(done) {
+    this.text = { code: true, chars: [], cur: 0, done };
+  }
+
+  addCodeLetter(letter) {
+    const t = this.text;
+    t.chars.push(letter);
+    t.cur = 0;
+    if (t.chars.length === ROOM_CODE_LENGTH) {
+      this.text = null;
+      t.done(t.chars.join(''));
+    }
+  }
+
+  updateCode(input) {
+    const t = this.text;
+    const n = ROOM_LETTERS.length;
+    if (input.nav('down')) t.cur = (t.cur + 1) % n;
+    if (input.nav('up')) t.cur = (t.cur + n - 1) % n;
+    if (input.pressed('accept')) this.addCodeLetter(ROOM_LETTERS[t.cur]);
+    else if (input.pressed('back')) {
+      if (!t.chars.length) this.text = null;
+      else t.cur = ROOM_LETTERS.indexOf(t.chars.pop());
+    }
+  }
+
+  codeKey(e) {
+    const t = this.text;
+    const letter = e.key.length === 1 ? e.key.toUpperCase() : '';
+    if (letter && ROOM_LETTERS.includes(letter)) this.addCodeLetter(letter);
+    else if (e.key === 'Backspace') { if (t.chars.length) t.chars.pop(); }
+    else if (e.key === 'Escape') this.text = null;
+    else if (e.key === 'ArrowDown') t.cur = (t.cur + 1) % ROOM_LETTERS.length;
+    else if (e.key === 'ArrowUp') t.cur = (t.cur + ROOM_LETTERS.length - 1) % ROOM_LETTERS.length;
+    else if (e.key === 'Enter') this.addCodeLetter(ROOM_LETTERS[t.cur]);
+    else return false;
+    return true;
+  }
+
   updateText(input) {
     const t = this.text;
+    if (t.code) { this.updateCode(input); return; }
     const cycle = d => {
       if (t.pos >= TEXT_MAX) return;
       const cur = (t.chars[t.pos] || ' ').toUpperCase();
@@ -1242,6 +1284,7 @@ class App {
   // Keyboard typing for an open text field. Returns true when the key was used.
   textKey(e) {
     const t = this.text;
+    if (t.code) return this.codeKey(e);
     if (e.key === 'Enter') this.closeText(true);
     else if (e.key === 'Escape') this.closeText(false);
     else if (e.key === 'Backspace') { if (t.pos > 0) t.chars.splice(--t.pos, 1); }
@@ -1446,11 +1489,7 @@ class App {
     } else if (row === 'host' && input.pressed('accept')) {
       this.hostGame();
     } else if (row === 'join' && input.pressed('accept')) {
-      this.openText('ENTER ROOM CODE', '', text => {
-        const code = cleanRoomCode(text);
-        if (code.length === 4) this.joinGame(code);
-        else this.toast('Room codes are 4 letters');
-      });
+      this.openCode(code => this.joinGame(code));
     }
     if (input.pressed('back')) this.screen = 'menu';
   }
@@ -1894,8 +1933,34 @@ class App {
     r.smallCenter(`${b('dpad')} Up/Dn:Scroll  ${b('pageLeft')}/${b('pageRight')}:Page  ${b('back')}:Back`, 0x100, COLORS.text);
   }
 
+  drawCode(r) {
+    const t = this.text;
+    r.dim(0.6);
+    r.rect(0x10, 0x48, SCREEN_W - 0x20, 0x5c, COLORS.alt);
+    r.rect(0x11, 0x49, SCREEN_W - 0x22, 0x5a, '#000');
+    r.center('ENTER ROOM CODE', 0x50, COLORS.warning);
+    // Four large letter boxes: entered letters, then the one being chosen, then blanks.
+    const size = 32, gap = 8;
+    const x0 = (SCREEN_W - (ROOM_CODE_LENGTH * size + (ROOM_CODE_LENGTH - 1) * gap)) / 2;
+    for (let i = 0; i < ROOM_CODE_LENGTH; i++) {
+      const x = x0 + i * (size + gap);
+      const cur = i === t.chars.length;
+      r.rect(x, 0x62, size, size, cur ? 'rgba(255,255,0,0.15)' : 'rgba(255,255,255,0.08)');
+      const ch = i < t.chars.length ? t.chars[i] : cur ? ROOM_LETTERS[t.cur] : '';
+      if (ch) r.text(ch, x, 0x62, cur ? COLORS.warning : COLORS.text, 1, 4);
+      if (cur && ((this.demo.frames >> 4) & 1)) r.rect(x, 0x62 + size + 1, size, 2, COLORS.warning);
+    }
+    const b = a => this.glyph(a);
+    if (this.input.device === 'keyboard') {
+      r.smallCenter('Type the code   Backspace:Delete   Esc:Cancel', 0x92, COLORS.text);
+    } else {
+      r.smallCenter(`${b('dpad')} Down/Up:Change Letter  ${b('accept')}:Add Letter  ${b('back')}:Delete`, 0x92, COLORS.text);
+    }
+  }
+
   drawText(r) {
     const t = this.text;
+    if (t.code) { this.drawCode(r); return; }
     r.dim(0.6);
     r.rect(0x10, 0x48, SCREEN_W - 0x20, 0x5c, COLORS.alt);
     r.rect(0x11, 0x49, SCREEN_W - 0x22, 0x5a, '#000');

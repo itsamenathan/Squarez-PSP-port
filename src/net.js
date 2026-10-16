@@ -3,7 +3,8 @@
 // go directly between them, or through PeerJS's TURN relay when a network blocks that.
 
 const ID_PREFIX = 'squarez-v1-';
-const ROOM_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // no I or O, which look like 1 and 0
+export const ROOM_LETTERS = 'ABCDEFGHJKLMNPQRSTUVWXYZ'; // no I or O, which look like 1 and 0
+export const ROOM_CODE_LENGTH = 4;
 const CONNECT_MS = 20000;
 const PING_MS = 1000;
 const LOST_MS = 8000;
@@ -25,13 +26,9 @@ function loadPeerJS() {
   return loading;
 }
 
-export function cleanRoomCode(text) {
-  return String(text).toUpperCase().replace(/[^A-Z]/g, '').slice(0, 4);
-}
-
 function newRoomCode() {
   let code = '';
-  for (let i = 0; i < 4; i++) code += ROOM_LETTERS[Math.floor(Math.random() * ROOM_LETTERS.length)];
+  for (let i = 0; i < ROOM_CODE_LENGTH; i++) code += ROOM_LETTERS[Math.floor(Math.random() * ROOM_LETTERS.length)];
   return code;
 }
 
